@@ -28,6 +28,7 @@ enum UserEvent {
 
 struct TrayIds {
     open: MenuId,
+    open_sys: MenuId,
     update: MenuId,
     restart: MenuId,
     autostart: MenuId,
@@ -74,7 +75,9 @@ impl ApplicationHandler<UserEvent> for App {
                     supervisor::shutdown();
                     std::process::exit(0);
                 } else if ev.id == self.ids.open {
-                    open_browser(&self.url);
+                    open_browser(&self.url); // 独立窗口优先
+                } else if ev.id == self.ids.open_sys {
+                    open_system_browser(&self.url); // 强制系统浏览器（DevTools/多标签）
                 } else if ev.id == self.ids.logs {
                     open_dir(&runtime::logs_dir());
                 } else if ev.id == self.ids.update {
@@ -222,6 +225,7 @@ fn build_menu() -> (Menu, TrayIds) {
     let status_item = MenuItem::new(&status_text, false, None);
 
     let open_item = MenuItem::new("打开界面", st.ready, None);
+    let open_sys_item = MenuItem::new("在浏览器中打开", st.ready, None);
     let update_item = MenuItem::new("检查更新", true, None);
     let restart_item = MenuItem::new("重启引擎", true, None);
     let autostart_item = CheckMenuItem::with_id(
@@ -239,6 +243,7 @@ fn build_menu() -> (Menu, TrayIds) {
     let menu = Menu::new();
     let _ = menu.append(&status_item);
     let _ = menu.append(&open_item);
+    let _ = menu.append(&open_sys_item);
     let _ = menu.append(&market_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&update_item);
@@ -250,6 +255,7 @@ fn build_menu() -> (Menu, TrayIds) {
 
     let ids = TrayIds {
         open: open_item.id().clone(),
+        open_sys: open_sys_item.id().clone(),
         update: update_item.id().clone(),
         restart: restart_item.id().clone(),
         autostart: autostart_item.id().clone(),
@@ -399,6 +405,20 @@ mod icon_tests {
         assert_eq!(rgba.len(), 32 * 32 * 4);
         assert!(rgba.chunks_exact(4).any(|px| px[3] > 0), "应存在非透明像素");
     }
+
+    /// --app 独立窗口参数格式（Edge/Chrome 规范）
+    #[test]
+    fn app_window_arg_format() {
+        assert_eq!(app_browser_args("http://127.0.0.1:3080"), vec!["--app=http://127.0.0.1:3080"]);
+    }
+
+    /// 浏览器探测：命中的路径必须真实存在；未命中合法（调用方回退系统浏览器）
+    #[test]
+    fn browser_probe_exists_when_hit() {
+        if let Some(p) = find_app_browser() {
+            assert!(p.is_file(), "探测到的浏览器必须存在: {}", p.display());
+        }
+    }
 }
 
 /// 32x32 RGBA 图标：深蓝圆角方块 + 白色中心点 + 青色光环（「盒子/桌面」意象，象征打开即用）
@@ -441,7 +461,47 @@ fn gen_icon_rgba(w: u32, h: u32) -> Vec<u8> {
     rgba
 }
 
+// ---------- 打开界面：优先独立窗口（--app），回退系统浏览器 ----------
+
+/// Chromium 系浏览器候选（Edge 优先——Win10/11 系统自带，无需用户安装）
+fn find_app_browser() -> Option<std::path::PathBuf> {
+    const CANDIDATES: [&str; 4] = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ];
+    CANDIDATES.iter().map(std::path::PathBuf::from).find(|p| p.is_file())
+}
+
+/// --app 参数（独立窗口：无地址栏 + 任务栏图标，让官方 Web UI 看起来就是桌面 App）
+fn app_browser_args(url: &str) -> Vec<String> {
+    vec![format!("--app={url}")]
+}
+
+/// 以独立窗口打开 URL（Edge/Chrome --app）；找不到浏览器则 false（调用方回退）
+fn open_app_window(url: &str) -> bool {
+    if let Some(browser) = find_app_browser() {
+        let mut cmd = std::process::Command::new(&browser);
+        cmd.args(app_browser_args(url));
+        supervisor::hide_window(&mut cmd);
+        if cmd.spawn().is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 打开界面：优先独立桌面窗口（--app）；无 Edge/Chrome 时回退系统默认浏览器
 fn open_browser(url: &str) {
+    if open_app_window(url) {
+        return;
+    }
+    open_system_browser(url);
+}
+
+/// 强制用系统默认浏览器打开（调试/高级用户：可看 DevTools、多标签）
+fn open_system_browser(url: &str) {
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd")
         .args(["/C", "start", "", url])
