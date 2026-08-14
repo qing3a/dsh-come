@@ -36,6 +36,8 @@ pub struct SuperStatus {
     pub version: Option<String>,
     /// 连续重启次数
     pub restarts: u32,
+    /// 当前阶段提示（首次安装/下载/启动中…，托盘状态行展示；空 = 无阶段）
+    pub stage: String,
 }
 
 impl Default for SuperStatus {
@@ -49,6 +51,7 @@ impl Default for SuperStatus {
             auto_restart: false,
             version: None,
             restarts: 0,
+            stage: String::new(),
         }
     }
 }
@@ -80,6 +83,13 @@ fn state() -> &'static Arc<Mutex<SuperState>> {
 /// 当前引擎状态快照
 pub fn status() -> SuperStatus {
     state().lock().map(|s| s.status.clone()).unwrap_or_default()
+}
+
+/// 设置当前阶段提示（首次安装/下载/启动中…；空字符串清除）——托盘状态行实时反馈
+pub fn set_stage(s: &str) {
+    if let Ok(mut st) = state().lock() {
+        st.status.stage = s.to_string();
+    }
 }
 
 /// 日志入口（供 updater / tray 等其他模块写引擎滚动日志）
@@ -230,6 +240,11 @@ pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
     st.status.last_error = None;
     st.status.auto_restart = true;
     st.status.version = Some(ver.to_string());
+    // 阶段提示：调用方（bootstrap 首次安装）可能已设置更明确的阶段（如「下载 DSH…」），
+    // 只在为空时兜底「启动中…」
+    if st.status.stage.is_empty() {
+        st.status.stage = "启动中…".to_string();
+    }
     // 注意：不在 start() 里清零 restarts——监测线程递增后被清零会让崩溃上限永不触发。
     // 预算清零由「健康期重置」负责（连续运行超 HEALTHY_RESET_SECS）。
     st.last_start = std::time::Instant::now();
@@ -238,13 +253,14 @@ pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
     append_log(&format!("dsh 引擎启动 pid={pid} port={} ver={ver}", cfg.port));
     ensure_monitor(cfg.clone());
 
-    // 就绪探测线程：HTTP 200 后置 ready（托盘状态行 /「打开界面」使能）
+    // 就绪探测线程：HTTP 200 后置 ready（托盘状态行 /「打开界面」使能）；清除阶段提示
     let p = cfg.port;
     let timeout = cfg.startup_timeout_secs;
     std::thread::spawn(move || {
         wait_ready(p, timeout);
         if let Ok(mut st) = state().lock() {
             st.status.ready = true;
+            st.status.stage.clear();
         }
         let msg = if http_ok(p, 1000) {
             format!("界面就绪: http://127.0.0.1:{p}")

@@ -218,12 +218,14 @@ fn ensure_node_inner() -> Result<(), String> {
     }
 
     append_log("首次运行：开始自动安装 Node（约 30MB）…");
+    crate::supervisor::set_stage("首次安装：下载 Node（约 30MB）…");
     let root = root_dir();
     let zip_path = root.join(format!("node-v{NODE_VERSION}-win-x64.zip"));
     let tmp = root.join("node-tmp");
     let _ = std::fs::remove_dir_all(&tmp);
 
     download_node_zip(&zip_path)?;
+    crate::supervisor::set_stage("首次安装：解压 Node…");
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     unzip(&zip_path, &tmp)?;
 
@@ -251,5 +253,6 @@ fn ensure_node_inner() -> Result<(), String> {
         "Node {NODE_VERSION} 已就绪: {}",
         node_dir_path.display()
     ));
+    crate::supervisor::set_stage("");
     Ok(())
 }

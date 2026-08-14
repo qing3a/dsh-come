@@ -189,7 +189,10 @@ pub fn bootstrap(cfg: &AppConfig) -> bool {
         None => match latest_from_registry() {
             Ok(v) => {
                 append_log(&format!("首次引导：锁定最新版本 {v}"));
-                // 首次无需冒烟：启动 + 就绪探测即验证（省一次下载耗时）
+                // 首次无需冒烟：启动 + 就绪探测即验证（省一次下载耗时）。
+                // npx 首次需下载 dsh 依赖树（含 koffi 原生包，可能 1-3 分钟），
+                // 明确阶段提示（start 不会覆盖非空 stage）
+                supervisor::set_stage("首次启动：下载 DSH（约 1-3 分钟）…");
                 v
             }
             Err(e) => {

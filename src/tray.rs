@@ -6,7 +6,7 @@
 //! - 2s 定时重建菜单，让状态行（版本/就绪/错误）对小白实时可见
 //! - 检查更新与插件安装都放后台线程，完成后事件回传触发菜单重建
 
-use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -29,6 +29,8 @@ enum UserEvent {
 struct TrayIds {
     open: MenuId,
     update: MenuId,
+    restart: MenuId,
+    autostart: MenuId,
     logs: MenuId,
     quit: MenuId,
 }
@@ -40,6 +42,8 @@ struct App {
     tray: Option<tray_icon::TrayIcon>,
     /// 事件循环退出前重建菜单/转发后台线程完成信号（winit 0.30：proxy 须在外部创建）
     proxy: EventLoopProxy<UserEvent>,
+    /// 已自动打开过浏览器（就绪后只自动开一次；之后用户自己点菜单）
+    auto_opened: bool,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -87,6 +91,31 @@ impl ApplicationHandler<UserEvent> for App {
                         supervisor::log(&msg);
                         let _ = proxy.send_event(UserEvent::UpdateDone);
                     });
+                } else if ev.id == self.ids.restart {
+                    // 重启引擎：更新安装后一键立即生效（v2 更新流程的配套操作）
+                    let cfg = config::load();
+                    let ver = runtime::load_state().current.unwrap_or_default();
+                    if ver.is_empty() {
+                        supervisor::log("尚未安装 DSH 版本，无法重启");
+                    } else {
+                        let proxy = self.proxy.clone();
+                        std::thread::spawn(move || {
+                            let r = supervisor::restart(&cfg, &ver);
+                            match r {
+                                Ok(()) => supervisor::log("引擎已重启"),
+                                Err(e) => supervisor::log(&format!("引擎重启失败: {e}")),
+                            }
+                            let _ = proxy.send_event(UserEvent::UpdateDone);
+                        });
+                    }
+                } else if ev.id == self.ids.autostart {
+                    // 开机自启勾选翻转（注册表 HKCU Run；无需管理员权限）
+                    let on = !autostart_enabled();
+                    match set_autostart(on) {
+                        Ok(()) => supervisor::log(&format!("开机自启：{}", if on { "已开启" } else { "已关闭" })),
+                        Err(e) => supervisor::log(&format!("设置开机自启失败: {e}")),
+                    }
+                    self.rebuild();
                 } else if ev.id.0.starts_with("plugin:install:") {
                     let id = ev.id.0.trim_start_matches("plugin:install:").to_string();
                     self.run_plugin_op(&id, true);
@@ -123,11 +152,17 @@ impl App {
         });
     }
 
+    /// 重建托盘菜单；首次就绪后自动打开浏览器（小白双击后不需要知道去哪）
     fn rebuild(&mut self) {
         if let Some(tray) = &self.tray {
             let (menu, ids) = build_menu();
             let _ = tray.set_menu(Some(Box::new(menu)));
             self.ids = ids;
+        }
+        let st = supervisor::status();
+        if st.ready && !self.auto_opened {
+            self.auto_opened = true;
+            open_browser(&self.url);
         }
     }
 }
@@ -159,6 +194,7 @@ pub fn run_tray(url: &str) {
         menu: Some(menu),
         tray: None,
         proxy: app_proxy,
+        auto_opened: false,
     };
 
     // 兜底定时重建（15s）：刷新状态行。⚠️ 不能太频繁——之前 2s 重建导致鼠标悬停菜单时
@@ -187,6 +223,14 @@ fn build_menu() -> (Menu, TrayIds) {
 
     let open_item = MenuItem::new("打开界面", st.ready, None);
     let update_item = MenuItem::new("检查更新", true, None);
+    let restart_item = MenuItem::new("重启引擎", true, None);
+    let autostart_item = CheckMenuItem::with_id(
+        "autostart",
+        if autostart_enabled() { "开机自启：开" } else { "开机自启：关" },
+        true,
+        autostart_enabled(),
+        None,
+    );
     let logs_item = MenuItem::new("打开日志目录", true, None);
     let quit_item = MenuItem::new("退出", true, None);
 
@@ -198,6 +242,8 @@ fn build_menu() -> (Menu, TrayIds) {
     let _ = menu.append(&market_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&update_item);
+    let _ = menu.append(&restart_item);
+    let _ = menu.append(&autostart_item);
     let _ = menu.append(&logs_item);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit_item);
@@ -205,6 +251,8 @@ fn build_menu() -> (Menu, TrayIds) {
     let ids = TrayIds {
         open: open_item.id().clone(),
         update: update_item.id().clone(),
+        restart: restart_item.id().clone(),
+        autostart: autostart_item.id().clone(),
         logs: logs_item.id().clone(),
         quit: quit_item.id().clone(),
     };
@@ -242,7 +290,9 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
         .clone()
         .or_else(|| state.current.clone())
         .unwrap_or_else(|| "未安装".to_string());
-    let body = if st.running {
+    let body = if !st.stage.is_empty() {
+        st.stage.clone() // 阶段提示（首次安装/下载/启动中）优先
+    } else if st.running {
         if st.ready {
             format!("运行中 ✓ http://127.0.0.1:{}", st.port)
         } else {
@@ -407,4 +457,44 @@ fn open_dir(dir: &std::path::Path) {
         .spawn();
     #[cfg(not(target_os = "windows"))]
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+}
+
+// ---------- 开机自启（HKCU Run，无需管理员权限） ----------
+
+const AUTOSTART_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const AUTOSTART_NAME: &str = "DSH Desktop";
+
+/// 当前 exe 路径（自启项目标；带引号防路径空格）
+fn autostart_target() -> String {
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "dsh-desktop.exe".to_string());
+    format!("\"{exe}\"")
+}
+
+/// 开机自启是否已开启（注册表 Run 键下存在本程序）
+pub fn autostart_enabled() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(key) = hkcu.open_subkey_with_flags(AUTOSTART_KEY, winreg::enums::KEY_READ) {
+        let v: Option<String> = key.get_value(AUTOSTART_NAME).ok();
+        v.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// 设置开机自启（true=写入 Run 键，false=删除）
+pub fn set_autostart(on: bool) -> std::io::Result<()> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu.open_subkey_with_flags(AUTOSTART_KEY, KEY_WRITE)?;
+    if on {
+        key.set_value(AUTOSTART_NAME, &autostart_target())?;
+    } else {
+        let _ = key.delete_value(AUTOSTART_NAME);
+    }
+    Ok(())
 }
