@@ -259,7 +259,7 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
 }
 
 fn build_tray(menu: Menu) -> tray_icon::TrayIcon {
-    let icon = gen_icon();
+    let icon = gen_tray_icon();
     tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("DSH 桌面版")
@@ -268,9 +268,69 @@ fn build_tray(menu: Menu) -> tray_icon::TrayIcon {
         .expect("创建托盘图标失败")
 }
 
+/// 托盘图标：优先用 DeepSeek Harness 官方 favicon（内嵌 SVG → resvg 光栅化）；
+/// 渲染失败回退程序画图标。favicon 原图是黑色（深色任务栏不可见），
+/// 此处渲染**白色**版本。
+/// 出处：`apps/web/public/favicon.svg`（deepseek-harness，MIT 仓库资产）。
+/// 图标为 DeepSeek AI 商标，仅作引用，不暗示官方联名。
+fn gen_tray_icon() -> tray_icon::Icon {
+    gen_official_icon().unwrap_or_else(gen_icon)
+}
+
+fn gen_official_icon() -> Option<tray_icon::Icon> {
+    let pixmap = rasterize_official()?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    tray_icon::Icon::from_rgba(pixmap.data().to_vec(), w, h).ok()
+}
+
+/// 官方 favicon.svg 光栅化（黑色 → 白色，深色任务栏可见）。返回非预乘 RGBA Pixmap。
+fn rasterize_official() -> Option<resvg::tiny_skia::Pixmap> {
+    use resvg::tiny_skia::{Pixmap, Transform};
+    use resvg::usvg::{Options, Tree};
+    const SVG: &str = include_str!("../assets/favicon.svg");
+    // 黑色 → 白色；原 svg 的 prefers-color-scheme 媒体查询一并作废
+    let svg = SVG.replace("fill=\"#000\"", "fill=\"#fff\"");
+    let tree = Tree::from_str(&svg, &Options::default()).ok()?;
+    let (w, h) = (64u32, 64u32); // 64 渲染，HiDPI 更清晰
+    let mut pixmap = Pixmap::new(w, h)?;
+    resvg::render(&tree, Transform::default(), &mut pixmap.as_mut());
+    Some(pixmap) // 纯黑/白形状 alpha 仅 0/255，无半透明 → 无需 unpremultiply
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+
+    /// 官方图标光栅化成功且存在不透明白色像素（深色任务栏可见的前提）
+    #[test]
+    fn official_icon_renders_white() {
+        let pm = rasterize_official().expect("SVG 应能光栅化");
+        assert_eq!(pm.width(), 64);
+        assert_eq!(pm.height(), 64);
+        let has_white = pm
+            .data()
+            .chunks_exact(4)
+            .any(|px| px[3] > 0 && px[0] > 200 && px[1] > 200 && px[2] > 200);
+        assert!(has_white, "应存在不透明白色像素（原图黑→白替换应生效）");
+    }
+
+    /// 兜底程序画图标仍可用（像素非空 + 存在非透明像素）
+    #[test]
+    fn fallback_icon_builds() {
+        let rgba = gen_icon_rgba(32, 32);
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+        assert!(rgba.chunks_exact(4).any(|px| px[3] > 0), "应存在非透明像素");
+    }
+}
+
 /// 32x32 RGBA 图标：深蓝圆角方块 + 白色中心点 + 青色光环（「盒子/桌面」意象，象征打开即用）
 fn gen_icon() -> tray_icon::Icon {
     let (w, h) = (32u32, 32u32);
+    let rgba = gen_icon_rgba(w, h);
+    tray_icon::Icon::from_rgba(rgba, w, h).expect("生成图标失败")
+}
+
+fn gen_icon_rgba(w: u32, h: u32) -> Vec<u8> {
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     let blue = [34u8, 74u8, 160u8, 255u8];
     let white = [238u8, 242u8, 255u8, 255u8];
@@ -300,7 +360,7 @@ fn gen_icon() -> tray_icon::Icon {
             }
         }
     }
-    tray_icon::Icon::from_rgba(rgba, w, h).expect("生成图标失败")
+    rgba
 }
 
 fn open_browser(url: &str) {

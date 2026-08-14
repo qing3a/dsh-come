@@ -18,6 +18,8 @@ chrono = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 # Node 自举安装：解压官方 portable zip（纯 Rust，无系统依赖）
 zip = "0.6"
+# 托盘图标：官方 favicon.svg 光栅化（纯 Rust；tiny-skia 后端内置，关掉图像/字体/系统字体等不需要的特性）
+resvg = { version = "0.44", default-features = false }
 
 [profile.release]
 strip = true
