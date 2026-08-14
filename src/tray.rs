@@ -411,7 +411,8 @@ fn rasterize_official() -> Option<resvg::tiny_skia::Pixmap> {
         SVG.replace("fill=\"#000\"", "fill=\"#fff\"")
     };
     let tree = Tree::from_str(&svg, &Options::default()).ok()?;
-    let (w, h) = (64u32, 64u32); // 64 渲染，HiDPI 更清晰
+    // 32x32 输出：Windows 托盘图标标准尺寸（tray-icon 文档建议；64 传系统缩放反而可能显小/发糊）
+    let (w, h) = (32u32, 32u32);
     let mut pixmap = Pixmap::new(w, h)?;
     resvg::render(&tree, Transform::default(), &mut pixmap.as_mut());
     Some(pixmap) // 纯黑/白形状 alpha 仅 0/255，无半透明 → 无需 unpremultiply
@@ -425,8 +426,8 @@ mod icon_tests {
     #[test]
     fn official_icon_renders() {
         let pm = rasterize_official().expect("SVG 应能光栅化");
-        assert_eq!(pm.width(), 64);
-        assert_eq!(pm.height(), 64);
+        assert_eq!(pm.width(), 32, "Windows 托盘标准尺寸 32x32");
+        assert_eq!(pm.height(), 32);
         let has_opaque = pm.data().chunks_exact(4).any(|px| px[3] > 0);
         assert!(has_opaque, "应存在非透明像素（浅色主题黑 logo / 深色主题白 logo）");
     }
