@@ -142,9 +142,43 @@ fn append_log(line: &str) {
 }
 
 /// 下载 node zip 到目标路径；逐个候选尝试，成功即返回
+/// 下载百分比（0-100；无总长信息时 None）
+fn download_percent(downloaded: u64, total: Option<u64>) -> Option<u8> {
+    let t = total?;
+    if t == 0 {
+        return Some(0);
+    }
+    Some(((downloaded * 100) / t).min(100) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::download_percent;
+
+    #[test]
+    fn percent_basic() {
+        assert_eq!(download_percent(50, Some(100)), Some(50));
+        assert_eq!(download_percent(0, Some(100)), Some(0));
+        assert_eq!(download_percent(100, Some(100)), Some(100));
+    }
+
+    #[test]
+    fn percent_capped_and_unknown() {
+        // 超过总量（服务端长度偏差）封顶 100
+        assert_eq!(download_percent(150, Some(100)), Some(100));
+        // 无总长信息（无 content-length）→ None，调用方退回阶段提示
+        assert_eq!(download_percent(50, None), None);
+        // 总量 0 防除零
+        assert_eq!(download_percent(0, Some(0)), Some(0));
+    }
+}
+
+/// 下载 node zip 到目标路径；逐个候选尝试，成功即返回。
+/// 流式下载（防 30MB 一次性进内存）+ 百分比进度（stage 状态行实时显示）。
 fn download_node_zip(zip_path: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read, Write};
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(300)) // 流式读 body：墙内 30MB 可能慢，给足时间
         .build()
         .map_err(|e| e.to_string())?;
     let mut last_err = String::new();
@@ -152,19 +186,57 @@ fn download_node_zip(zip_path: &std::path::Path) -> Result<(), String> {
         append_log(&format!("下载 Node（{url}）…"));
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
-                match resp.bytes() {
-                    Ok(bytes) => {
-                        if let Some(dir) = zip_path.parent() {
-                            let _ = std::fs::create_dir_all(dir);
-                        }
-                        if std::fs::write(zip_path, &bytes).is_ok() {
-                            append_log(&format!("Node 下载完成（{} MB）", bytes.len() / 1024 / 1024));
-                            return Ok(());
-                        }
-                        last_err = "写入 zip 失败".to_string();
-                    }
-                    Err(e) => last_err = format!("下载中断: {e}"),
+                let total = resp.content_length();
+                if let Some(dir) = zip_path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
                 }
+                let mut f = match std::fs::File::create(zip_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        last_err = format!("创建文件失败: {e}");
+                        continue;
+                    }
+                };
+                let mut reader = resp; // blocking::Response 实现 Read
+                let mut buf = vec![0u8; 256 * 1024];
+                let mut downloaded: u64 = 0;
+                let mut last_pct = 0u8;
+                let mut last_tick = std::time::Instant::now();
+                let mut io_err: Option<String> = None;
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            downloaded += n as u64;
+                            if f.write_all(&buf[..n]).is_err() {
+                                io_err = Some("写入 zip 失败".to_string());
+                                break;
+                            }
+                            // 进度节流：跨百分比且 ≥200ms 才更新（避免高频刷共享状态）
+                            let pct = download_percent(downloaded, total).unwrap_or(0);
+                            if pct > last_pct && last_tick.elapsed().as_millis() >= 200 {
+                                last_pct = pct;
+                                last_tick = std::time::Instant::now();
+                                crate::supervisor::set_stage(&format!("首次安装：下载 Node {pct}%…"));
+                            }
+                        }
+                        Err(e) => {
+                            io_err = Some(format!("下载中断: {e}"));
+                            break;
+                        }
+                    }
+                }
+                if let Some(err) = io_err {
+                    last_err = err;
+                    continue;
+                }
+                if f.flush().is_err() {
+                    last_err = "写入 zip 失败（flush）".to_string();
+                    continue;
+                }
+                append_log(&format!("Node 下载完成（{} MB）", downloaded / 1024 / 1024));
+                crate::supervisor::set_stage("首次安装：解压 Node…");
+                return Ok(());
             }
             Ok(resp) => last_err = format!("HTTP {}", resp.status()),
             Err(e) => last_err = format!("连接失败: {e}"),
