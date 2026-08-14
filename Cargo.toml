@@ -1,0 +1,23 @@
+[package]
+name = "dsh-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "DSH 桌面版：把 DeepSeek Harness 变成双击即用的 Windows 桌面 App（捆绑 Node + 钉版安装 + 验证式自动更新 + 崩溃自愈）"
+license = "MIT"
+
+[dependencies]
+# 系统托盘（exe 宿主已由 tray-icon 内部处理；与 md-agent 相同版本组合，Windows 已验证可编译）
+tray-icon = "0.24"
+winit = "0.30"
+# 配置 / state.json
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 日志时间戳
+chrono = "0.4"
+# updater：npm registry 查询 + 冒烟健康探测（blocking；rustls，无 openssl）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# Node 自举安装：解压官方 portable zip（纯 Rust，无系统依赖）
+zip = "0.6"
+
+[profile.release]
+strip = true
