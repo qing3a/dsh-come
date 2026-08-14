@@ -44,7 +44,7 @@ pub fn builtin_marketplace() -> Vec<PluginInfo> {
             name: "内置托盘增强".to_string(),
             version: "0.1".to_string(),
             verified: true,
-            desc: "进程内托盘（气泡通知）。桌面版已自带托盘，一般无需安装".to_string(),
+            desc: "进程内托盘（气泡通知）。DSH 伴侣已自带托盘，一般无需安装".to_string(),
             repo: Some("github.com/qing3a/dsh-tray".to_string()),
         },
     ]

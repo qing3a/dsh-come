@@ -1,4 +1,4 @@
-//! DSH 桌面版入口：把 DeepSeek Harness 变成双击即用的 Windows 桌面 App。
+//! DSH 伴侣入口：把 DeepSeek Harness 变成双击即用的 Windows 桌面 App。
 //! release 构建自动隐藏控制台窗口（windows_subsystem）。
 //!
 //! 流程：参数解析 → 目录骨架 → 后台首次引导（自动安装 latest + 启动引擎）→ 托盘事件循环；
@@ -51,7 +51,7 @@ fn main() {
     config::save(&cfg);
 
     let url = format!("http://127.0.0.1:{}", cfg.port);
-    eprintln!("DSH 桌面版已启动: {url}  根目录: {}", runtime::root_dir().display());
+    eprintln!("DSH 伴侣已启动: {url}  根目录: {}", runtime::root_dir().display());
 
     // 后台首次引导：自举安装 Node → 无已装版本则自动装 latest 并启动引擎（托盘状态行反映进度）
     {
@@ -81,7 +81,7 @@ fn main() {
 
 fn print_help() {
     println!(
-        "DSH 桌面版 — 双击即用的 DeepSeek Harness\n\
+        "DSH 伴侣 — 双击即用的 DeepSeek Harness\n\
          \n\
          用法: dsh-desktop [--port <端口>] [--no-tray]\n\
          \n\

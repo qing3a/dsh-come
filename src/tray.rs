@@ -2,7 +2,7 @@
 //!
 //! 复用 md-agent 的已验证模式（main.rs 托盘部分）：winit 事件循环 + MenuEvent 转发 +
 //! StartCause::Init 里建托盘（避免平台侧显示问题）。差异：
-//! - 菜单按 DSH 桌面版语义精简：状态行 / 打开界面 / 插件市场 / 检查更新 / 日志目录 / 退出
+//! - 菜单按 DSH 伴侣语义精简：状态行 / 打开界面 / 插件市场 / 检查更新 / 日志目录 / 退出
 //! - 2s 定时重建菜单，让状态行（版本/就绪/错误）对小白实时可见
 //! - 检查更新与插件安装都放后台线程，完成后事件回传触发菜单重建
 
@@ -289,7 +289,7 @@ fn build_market_submenu() -> Submenu {
     sub
 }
 
-/// 状态行文案：DSH 桌面版 v0.1.0-rc.6｜运行中 ✓ / 启动中… / 已停止 ✗（附错误）
+/// 状态行文案：DSH 伴侣 v0.1.0-rc.6｜运行中 ✓ / 启动中… / 已停止 ✗（附错误）
 fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
     let ver = st
         .version
@@ -311,14 +311,14 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
     } else {
         "已停止 ✗".to_string()
     };
-    format!("DSH 桌面版 v{ver}｜{body}")
+    format!("DSH 伴侣 v{ver}｜{body}")
 }
 
 fn build_tray(menu: Menu) -> Option<tray_icon::TrayIcon> {
     let icon = gen_tray_icon();
     match tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("DSH 桌面版")
+        .with_tooltip("DSH 伴侣")
         .with_icon(icon)
         .build()
     {

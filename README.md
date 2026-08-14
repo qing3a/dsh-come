@@ -1,4 +1,4 @@
-# dsh-desktop｜DSH 桌面版
+# dsh-desktop｜DSH 伴侣
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**双击即用的 Windows 桌面 App**——无需安装 Node、无需打开终端，首次运行自动完成一切。
 

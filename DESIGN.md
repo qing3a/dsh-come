@@ -1,4 +1,4 @@
-# dsh-desktop｜DSH 桌面版 — 设计文档
+# dsh-desktop｜DSH 伴侣 — 设计文档
 
 > 把 DeepSeek Harness（dsh）变成「双击即用」的 Windows 桌面 App：捆绑 Node、钉版安装、
 > 自动更新（验证通过才切换）、崩溃自愈。面向懂点开发但不想碰 Node/终端的人。
@@ -12,7 +12,7 @@
 | 项 | 决定 | 理由 |
 |---|---|---|
 | 仓库名 | `dsh-desktop` | 保留 `dsh-` 家族前缀（dsh-tray / dsh-event-auditor / dsh-plugin-verify 同族）；`desktop` 零解释成本 |
-| 产品显示名 | **DSH 桌面版** | 小白看到的托盘/窗口/README 首屏用中文；不用纯「DeepSeek」规避官方误导 |
+| 产品显示名 | **DSH 伴侣**（2026-08-14 用户由「DSH 桌面版」更名） | 小白看到的托盘/窗口/README 首屏用中文；不用纯「DeepSeek」规避官方误导；「伴侣」贴切「伴随 DSH 的管家/入口」语义 |
 | 目标用户 | 定位 A：懂点开发、被 CLI/Node 劝退的人 | 真正纯小白需要模板化 workspace（harness 侧问题），不是启动器能补的 |
 | 生态角色 | **进程外 supervisor**，不是插件 | 不做任何进程内逻辑（waterfall / settings 热改 / ctx.inject 全留给 TS 插件） |
 | 依赖方向 | launcher → verify（v2 收编验证引擎） | 单向依赖，不跨语言合并 |
