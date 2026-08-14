@@ -56,7 +56,13 @@ impl Default for SuperStatus {
 struct SuperState {
     child: Option<Child>,
     status: SuperStatus,
+    /// 本次启动时刻：连续运行超 HEALTHY_RESET_SECS 视为健康，重启预算清零
+    /// （md-agent 同款隐患：start() 内清零 restarts 会让崩溃上限永不触发 → 无限重启）
+    last_start: std::time::Instant,
 }
+
+/// 连续存活超此时长（秒）→ 重启预算清零（短时间内反复崩溃才累计）
+const HEALTHY_RESET_SECS: u64 = 30;
 
 static STATE: OnceLock<Arc<Mutex<SuperState>>> = OnceLock::new();
 static MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -66,6 +72,7 @@ fn state() -> &'static Arc<Mutex<SuperState>> {
         Arc::new(Mutex::new(SuperState {
             child: None,
             status: SuperStatus::default(),
+            last_start: std::time::Instant::now(),
         }))
     })
 }
@@ -79,6 +86,19 @@ pub fn status() -> SuperStatus {
 pub fn log(line: &str) {
     append_log(line);
 }
+
+/// 子进程不弹控制台黑窗口（Windows）：spawn 的 node/taskkill 默认会创建控制台窗口，
+/// 用户实测「经常弹出 nodejs 黑色窗口」即此因。stdout 重定向 ≠ 无窗口，
+/// 必须显式 CREATE_NO_WINDOW。所有 spawn 点（引擎/taskkill/冒烟/插件）统一调用。
+#[cfg(target_os = "windows")]
+pub fn hide_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_window(_cmd: &mut std::process::Command) {}
 
 // ---------- 滚动日志 ----------
 
@@ -171,6 +191,7 @@ fn build_command(cfg: &AppConfig, ver: &str) -> Result<(Command, PathBuf), Strin
         .args(npx_argv(ver, &cfg.host, cfg.port))
         .current_dir(&home)
         .env("DSH_HOME", &home);
+    hide_window(&mut cmd);
     Ok((cmd, home))
 }
 
@@ -209,7 +230,9 @@ pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
     st.status.last_error = None;
     st.status.auto_restart = true;
     st.status.version = Some(ver.to_string());
-    st.status.restarts = 0;
+    // 注意：不在 start() 里清零 restarts——监测线程递增后被清零会让崩溃上限永不触发。
+    // 预算清零由「健康期重置」负责（连续运行超 HEALTHY_RESET_SECS）。
+    st.last_start = std::time::Instant::now();
     drop(st); // 释放锁再起后台线程
 
     append_log(&format!("dsh 引擎启动 pid={pid} port={} ver={ver}", cfg.port));
@@ -247,7 +270,10 @@ pub fn stop() -> Result<(), String> {
 /// 杀进程树：taskkill /T 杀整棵树（node → 子进程），child.kill() 只杀直接子进程不够
 fn kill_child(st: &mut SuperState) {
     if let Some(pid) = st.status.pid {
-        let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
+        hide_window(&mut cmd);
+        let _ = cmd.status();
     }
     if let Some(mut c) = st.child.take() {
         let _ = c.kill();
@@ -318,7 +344,14 @@ fn ensure_monitor(cfg: AppConfig) {
                         st.status.last_error = None; // 手动 stop，正常
                     }
                 }
-                None => { /* 子进程存活，等待下一轮 */ }
+                None => {
+                    // 子进程存活：连续运行超健康期 → 重启预算清零（避免一次健康运行前的旧崩溃计数累加）
+                    if st.status.restarts > 0 && st.last_start.elapsed() > Duration::from_secs(HEALTHY_RESET_SECS) {
+                        st.status.restarts = 0;
+                        st.status.last_error = None;
+                        append_log("连续运行超健康期，重启预算已清零");
+                    }
+                }
             }
         }
     });

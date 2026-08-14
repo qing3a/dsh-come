@@ -15,7 +15,8 @@ pub struct AppConfig {
     pub max_restarts: u32,
     /// 重启退避封顶（秒）：1,2,4,... 指数退避，封顶后不再增长
     pub backoff_max_secs: u64,
-    /// 启动后等待 HTTP 200 的最长秒数（就绪探测）
+    /// 启动后等待 HTTP 200 的最长秒数（就绪探测）。
+    /// 首次运行 npx 要完整下载 dsh 依赖树（含 koffi 等原生包），60s 偏紧 → 默认 240s
     pub startup_timeout_secs: u64,
 }
 
@@ -26,7 +27,7 @@ impl Default for AppConfig {
             host: "127.0.0.1".to_string(),
             max_restarts: 5,
             backoff_max_secs: 30,
-            startup_timeout_secs: 60,
+            startup_timeout_secs: 240,
         }
     }
 }

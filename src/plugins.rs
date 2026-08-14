@@ -114,6 +114,7 @@ fn run_plugin_cmd(dsh_ver: &str, sub: &[&str]) -> Result<String, String> {
         .args(sub)
         .current_dir(&home)
         .env("DSH_HOME", &home);
+    supervisor::hide_window(&mut cmd);
     // PATH 前插 node_dir：让 dsh plugin 转发到的 pnpm 可解析
     if let Some(p) = std::env::var_os("PATH") {
         let mut paths = vec![runtime::node_dir().to_string_lossy().into_owned()];

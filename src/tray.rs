@@ -161,11 +161,13 @@ pub fn run_tray(url: &str) {
         proxy: app_proxy,
     };
 
-    // 2s 定时重建：状态行（版本/就绪/错误/重启中）实时可见
+    // 兜底定时重建（15s）：刷新状态行。⚠️ 不能太频繁——之前 2s 重建导致鼠标悬停菜单时
+    // 菜单被 set_menu 替换而消失/闪烁（用户实测反馈）。重建主要靠事件驱动（启动/更新/插件完成），
+    // 定时只是兜底（15s 对小白状态行足够，参考 md-agent 用 30s）。
     {
         let proxy = event_loop.create_proxy();
         std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_secs(15));
             let _ = proxy.send_event(UserEvent::UpdateDone);
         });
     }

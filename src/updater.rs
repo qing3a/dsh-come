@@ -79,6 +79,7 @@ fn smoke_test(ver: &str) -> Result<(), String> {
         .args(supervisor::npx_argv(ver, "127.0.0.1", port))
         .current_dir(&home)
         .env("DSH_HOME", &home);
+    supervisor::hide_window(&mut cmd);
     // 日志进临时文件，防管道写满
     let logp = runtime::logs_dir().join(format!("smoke-{ver}.log"));
     let f = std::fs::OpenOptions::new()
@@ -92,8 +93,9 @@ fn smoke_test(ver: &str) -> Result<(), String> {
     let mut child = cmd.spawn().map_err(|e| format!("冒烟启动失败: {e}"))?;
     let pid = child.id();
 
-    // 轮询 HTTP 200（最多 120s：含 npx 首次下载时间）
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    // 轮询 HTTP 200（与启动超时一致；npx 首次下载依赖树可能较慢）
+    let timeout = crate::config::load().startup_timeout_secs;
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
     let mut ok = false;
     while std::time::Instant::now() < deadline {
         if supervisor::http_ok(port, 1000) {
@@ -107,7 +109,10 @@ fn smoke_test(ver: &str) -> Result<(), String> {
     }
 
     // 杀进程树（taskkill /T，防残留 node 占端口）
-    let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
+    let mut tk = Command::new("taskkill");
+    tk.args(["/T", "/F", "/PID", &pid.to_string()]);
+    supervisor::hide_window(&mut tk);
+    let _ = tk.status();
     let _ = child.wait();
 
     if ok {
@@ -184,7 +189,7 @@ pub fn bootstrap(cfg: &AppConfig) -> bool {
         None => match latest_from_registry() {
             Ok(v) => {
                 append_log(&format!("首次引导：锁定最新版本 {v}"));
-                // 首次无需冒烟：启动 + 就绪探测即验证（省一次 120s 下载耗时）
+                // 首次无需冒烟：启动 + 就绪探测即验证（省一次下载耗时）
                 v
             }
             Err(e) => {
@@ -194,7 +199,16 @@ pub fn bootstrap(cfg: &AppConfig) -> bool {
         },
     };
     match supervisor::start(cfg, &ver) {
-        Ok(()) => true,
+        Ok(()) => {
+            // 持久化锁定版本：state.json 记录 current，后续运行不再依赖 registry 查询
+            let mut st = runtime::load_state();
+            if st.current.as_deref() != Some(ver.as_str()) {
+                st.current = Some(ver.clone());
+                record(&mut st, &ver, true, "首次引导锁定");
+                let _ = runtime::save_state(&st);
+            }
+            true
+        }
         Err(e) => {
             append_log(&format!("启动失败: {e}"));
             false
