@@ -57,7 +57,7 @@ impl ApplicationHandler<UserEvent> for App {
         // 事件循环真正运行后再建托盘图标（避免平台侧显示问题）
         if matches!(cause, StartCause::Init) {
             if let Some(menu) = self.menu.take() {
-                self.tray = Some(build_tray(menu));
+                self.tray = build_tray(menu);
             }
         }
     }
@@ -258,38 +258,69 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
     format!("DSH 桌面版 v{ver}｜{body}")
 }
 
-fn build_tray(menu: Menu) -> tray_icon::TrayIcon {
+fn build_tray(menu: Menu) -> Option<tray_icon::TrayIcon> {
     let icon = gen_tray_icon();
-    tray_icon::TrayIconBuilder::new()
+    match tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("DSH 桌面版")
         .with_icon(icon)
         .build()
-        .expect("创建托盘图标失败")
+    {
+        Ok(t) => {
+            supervisor::log("托盘图标已创建（官方 DSH logo）");
+            Some(t)
+        }
+        Err(e) => {
+            // 托盘创建失败不 panic：记日志继续跑（浏览器界面不受影响）
+            supervisor::log(&format!("创建托盘图标失败（无托盘，界面仍可用）: {e}"));
+            None
+        }
+    }
 }
 
 /// 托盘图标：优先用 DeepSeek Harness 官方 favicon（内嵌 SVG → resvg 光栅化）；
-/// 渲染失败回退程序画图标。favicon 原图是黑色（深色任务栏不可见），
-/// 此处渲染**白色**版本。
+/// 渲染失败回退程序画图标。**颜色跟随系统主题**：
+/// - 深色任务栏（AppsUseLightTheme=0）→ 白色 logo
+/// - 浅色任务栏（AppsUseLightTheme=1）→ 黑色 logo（原图）
+/// 否则浅色主题下白 logo 完全隐形（用户实测「没看到图标」）。
 /// 出处：`apps/web/public/favicon.svg`（deepseek-harness，MIT 仓库资产）。
 /// 图标为 DeepSeek AI 商标，仅作引用，不暗示官方联名。
 fn gen_tray_icon() -> tray_icon::Icon {
-    gen_official_icon().unwrap_or_else(gen_icon)
+    if let Some(pm) = rasterize_official() {
+        let (w, h) = (pm.width(), pm.height());
+        if let Ok(icon) = tray_icon::Icon::from_rgba(pm.data().to_vec(), w, h) {
+            return icon;
+        }
+    }
+    gen_icon()
 }
 
-fn gen_official_icon() -> Option<tray_icon::Icon> {
-    let pixmap = rasterize_official()?;
-    let (w, h) = (pixmap.width(), pixmap.height());
-    tray_icon::Icon::from_rgba(pixmap.data().to_vec(), w, h).ok()
+/// 系统是否为浅色主题（浅色任务栏）：HKCU\...\Themes\Personalize\AppsUseLightTheme
+/// 读不到时按浅色处理（Windows 默认浅色任务栏，白色 logo 会隐形）
+fn system_uses_light_theme() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok();
+    let v: Option<u32> = key.and_then(|k| k.get_value("AppsUseLightTheme").ok());
+    v.unwrap_or(1) != 0
 }
 
-/// 官方 favicon.svg 光栅化（黑色 → 白色，深色任务栏可见）。返回非预乘 RGBA Pixmap。
+/// 官方 favicon.svg 光栅化（颜色随系统主题：深色任务栏白、浅色任务栏黑）。返回非预乘 RGBA Pixmap。
 fn rasterize_official() -> Option<resvg::tiny_skia::Pixmap> {
     use resvg::tiny_skia::{Pixmap, Transform};
     use resvg::usvg::{Options, Tree};
     const SVG: &str = include_str!("../assets/favicon.svg");
-    // 黑色 → 白色；原 svg 的 prefers-color-scheme 媒体查询一并作废
-    let svg = SVG.replace("fill=\"#000\"", "fill=\"#fff\"");
+    let light = system_uses_light_theme();
+    // 浅色主题用原图（黑 logo 在浅色任务栏可见）；深色主题黑→白（原 svg 的
+    // prefers-color-scheme 媒体查询被整体替换，逻辑归我们管）
+    let svg = if light {
+        SVG.to_string()
+    } else {
+        SVG.replace("fill=\"#000\"", "fill=\"#fff\"")
+    };
     let tree = Tree::from_str(&svg, &Options::default()).ok()?;
     let (w, h) = (64u32, 64u32); // 64 渲染，HiDPI 更清晰
     let mut pixmap = Pixmap::new(w, h)?;
@@ -301,17 +332,14 @@ fn rasterize_official() -> Option<resvg::tiny_skia::Pixmap> {
 mod icon_tests {
     use super::*;
 
-    /// 官方图标光栅化成功且存在不透明白色像素（深色任务栏可见的前提）
+    /// 官方图标光栅化成功且存在非透明像素（黑或白，取决于系统主题；任务栏可见的前提）
     #[test]
-    fn official_icon_renders_white() {
+    fn official_icon_renders() {
         let pm = rasterize_official().expect("SVG 应能光栅化");
         assert_eq!(pm.width(), 64);
         assert_eq!(pm.height(), 64);
-        let has_white = pm
-            .data()
-            .chunks_exact(4)
-            .any(|px| px[3] > 0 && px[0] > 200 && px[1] > 200 && px[2] > 200);
-        assert!(has_white, "应存在不透明白色像素（原图黑→白替换应生效）");
+        let has_opaque = pm.data().chunks_exact(4).any(|px| px[3] > 0);
+        assert!(has_opaque, "应存在非透明像素（浅色主题黑 logo / 深色主题白 logo）");
     }
 
     /// 兜底程序画图标仍可用（像素非空 + 存在非透明像素）

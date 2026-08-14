@@ -20,6 +20,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 zip = "0.6"
 # 托盘图标：官方 favicon.svg 光栅化（纯 Rust；tiny-skia 后端内置，关掉图像/字体/系统字体等不需要的特性）
 resvg = { version = "0.44", default-features = false }
+# 托盘图标颜色跟随系统主题（浅色任务栏用黑 logo、深色用白 logo）
+winreg = "0.52"
 
 [profile.release]
 strip = true
