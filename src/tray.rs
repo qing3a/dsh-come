@@ -30,6 +30,7 @@ struct TrayIds {
     open: MenuId,
     open_sys: MenuId,
     update: MenuId,
+    apply: MenuId,
     restart: MenuId,
     autostart: MenuId,
     logs: MenuId,
@@ -81,17 +82,35 @@ impl ApplicationHandler<UserEvent> for App {
                 } else if ev.id == self.ids.logs {
                     open_dir(&runtime::logs_dir());
                 } else if ev.id == self.ids.update {
-                    // 后台线程跑更新（可能联网安装耗时）；完成后回传事件重建菜单
+                    // 后台线程检查更新（可能联网下载耗时）；完成后回传事件重建菜单。
+                    // 结果不自动切换：验证通过只存 pending，菜单出现「应用更新」由用户确认。
                     let cfg = config::load();
                     let proxy = self.proxy.clone();
                     std::thread::spawn(move || {
                         let r = updater::check_and_install(&cfg);
                         let msg = match &r {
                             updater::UpdateResult::UpToDate(v) => format!("已是最新版本 {v}"),
-                            updater::UpdateResult::Installed(v) => format!("已更新到 {v}（重启 dsh 生效）"),
+                            updater::UpdateResult::Pending(v) => format!("发现新版本 {v}（已验证），菜单「应用更新」确认后生效"),
                             updater::UpdateResult::Failed(e) => format!("更新失败: {e}"),
                         };
                         supervisor::log(&msg);
+                        let _ = proxy.send_event(UserEvent::UpdateDone);
+                    });
+                } else if ev.id == self.ids.apply {
+                    // 用户确认应用待确认更新：切换版本 → 重启引擎立即生效
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        match updater::apply_pending() {
+                            Ok(ver) => {
+                                supervisor::log(&format!("应用更新 v{ver}，正在重启引擎…"));
+                                let cfg = config::load();
+                                match supervisor::restart(&cfg, &ver) {
+                                    Ok(()) => supervisor::log("引擎已用新版本重启"),
+                                    Err(e) => supervisor::log(&format!("引擎重启失败（重启后生效）: {e}")),
+                                }
+                            }
+                            Err(e) => supervisor::log(&format!("应用更新失败: {e}")),
+                        }
                         let _ = proxy.send_event(UserEvent::UpdateDone);
                     });
                 } else if ev.id == self.ids.restart {
@@ -202,7 +221,7 @@ pub fn run_tray(url: &str) {
 
     // 兜底定时重建（15s）：刷新状态行。⚠️ 不能太频繁——之前 2s 重建导致鼠标悬停菜单时
     // 菜单被 set_menu 替换而消失/闪烁（用户实测反馈）。重建主要靠事件驱动（启动/更新/插件完成），
-    // 定时只是兜底（15s 对小白状态行足够，参考 md-agent 用 30s）。
+    // 定时只是兜底（15s 对状态行足够，参考 md-agent 用 30s）。
     {
         let proxy = event_loop.create_proxy();
         std::thread::spawn(move || loop {
@@ -210,6 +229,7 @@ pub fn run_tray(url: &str) {
             let _ = proxy.send_event(UserEvent::UpdateDone);
         });
     }
+    // 不做启动自动检查更新（加快启动速度，用户需要时手动「检查更新」）
 
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("托盘事件循环错误: {e}");
@@ -227,6 +247,15 @@ fn build_menu() -> (Menu, TrayIds) {
     let open_item = MenuItem::new("打开界面", st.ready, None);
     let open_sys_item = MenuItem::new("在浏览器中打开", st.ready, None);
     let update_item = MenuItem::new("检查更新", true, None);
+    // 有已验证待应用的更新 → 菜单提示「应用更新」（更新前询问，用户确认才切换）
+    let apply_item = state.pending.as_ref().map(|v| {
+        MenuItem::with_id(
+            "apply-update",
+            format!("应用更新 → v{v}"),
+            true,
+            None,
+        )
+    });
     let restart_item = MenuItem::new("重启引擎", true, None);
     let autostart_item = CheckMenuItem::with_id(
         "autostart",
@@ -247,6 +276,9 @@ fn build_menu() -> (Menu, TrayIds) {
     let _ = menu.append(&market_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&update_item);
+    if let Some(item) = &apply_item {
+        let _ = menu.append(item);
+    }
     let _ = menu.append(&restart_item);
     let _ = menu.append(&autostart_item);
     let _ = menu.append(&logs_item);
@@ -257,6 +289,7 @@ fn build_menu() -> (Menu, TrayIds) {
         open: open_item.id().clone(),
         open_sys: open_sys_item.id().clone(),
         update: update_item.id().clone(),
+        apply: apply_item.as_ref().map(|i| i.id().clone()).unwrap_or_else(|| MenuId::new("apply-update-none")),
         restart: restart_item.id().clone(),
         autostart: autostart_item.id().clone(),
         logs: logs_item.id().clone(),

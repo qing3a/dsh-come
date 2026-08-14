@@ -29,8 +29,10 @@ struct DistTags {
 /// 更新结果（托盘状态行 / 日志展示）
 #[derive(Debug, Clone)]
 pub enum UpdateResult {
+    /// 已是最新（无更新）
     UpToDate(String),
-    Installed(String),
+    /// 发现新版本且已验证通过，待用户确认应用（state.pending 已存）
+    Pending(String),
     Failed(String),
 }
 
@@ -125,9 +127,10 @@ fn smoke_test(ver: &str) -> Result<(), String> {
     }
 }
 
-/// 检查更新并安装（主入口，托盘「检查更新」触发；已有版本运行中）。
-/// npx 通道无需预安装：直接冒烟验证新版，通过才切换 state.current（下次启动生效）。
-/// 阻塞执行；调用方应放后台线程。cfg 保留签名（冒烟暂不需配置，v2 验证用）。
+/// 检查更新（主入口，托盘「检查更新」触发）。
+/// npx 通道无需预安装：直接冒烟验证新版；**验证通过只存 pending，不切换**——
+/// 用户从托盘菜单「应用更新」确认后才切换（更新前询问，尽量不打断）。
+/// 阻塞执行；调用方应放后台线程。
 pub fn check_and_install(_cfg: &AppConfig) -> UpdateResult {
     let latest = match latest_from_registry() {
         Ok(v) => v,
@@ -144,17 +147,21 @@ pub fn check_and_install(_cfg: &AppConfig) -> UpdateResult {
     if state.known_bad.iter().any(|v| v == &latest) {
         return UpdateResult::Failed(format!("{latest} 已被标记为不可用（此前验证失败），跳过"));
     }
+    // 已是待确认状态 → 不重复验证
+    if state.pending.as_deref() == Some(latest.as_str()) {
+        return UpdateResult::Pending(latest);
+    }
 
     append_log(&format!("发现新版本: current={current:?} → latest={latest}"));
 
     // 冒烟验证（npx 会缓存下载该版本）
     match smoke_test(&latest) {
         Ok(()) => {
-            state.current = Some(latest.clone());
-            record(&mut state, &latest, true, "冒烟验证通过");
+            state.pending = Some(latest.clone());
+            record(&mut state, &latest, true, "冒烟验证通过，待用户确认");
             let _ = runtime::save_state(&state);
-            append_log(&format!("已切换当前版本 → {latest}（下次启动 dsh 引擎生效）"));
-            UpdateResult::Installed(latest)
+            append_log(&format!("新版本 {latest} 已验证，等待用户确认应用"));
+            UpdateResult::Pending(latest)
         }
         Err(e) => {
             if !state.known_bad.iter().any(|v| v == &latest) {
@@ -162,10 +169,23 @@ pub fn check_and_install(_cfg: &AppConfig) -> UpdateResult {
             }
             record(&mut state, &latest, false, &e);
             let _ = runtime::save_state(&state);
-            append_log(&format!("版本 {latest} 验证失败，保留上一版 {current:?}（回滚通道）"));
+            append_log(&format!("版本 {latest} 验证失败，保留当前 {current:?}（回滚通道）"));
             UpdateResult::Failed(e)
         }
     }
+}
+
+/// 应用待确认的更新：把 state.pending 提升为 current（用户从托盘「应用更新」确认后调用）。
+/// 切换后需重启 dsh 引擎生效（托盘「重启引擎」）。
+pub fn apply_pending() -> Result<String, String> {
+    let mut state = runtime::load_state();
+    let ver = state.pending.clone().ok_or_else(|| "没有待应用的更新".to_string())?;
+    state.current = Some(ver.clone());
+    state.pending = None;
+    record(&mut state, &ver, true, "用户确认应用");
+    runtime::save_state(&state).map_err(|e| e.to_string())?;
+    append_log(&format!("已切换到 v{ver}（重启 dsh 引擎生效）"));
+    Ok(ver)
 }
 
 fn record(state: &mut runtime::State, ver: &str, ok: bool, detail: &str) {
@@ -180,30 +200,22 @@ fn record(state: &mut runtime::State, ver: &str, ok: bool, detail: &str) {
     );
 }
 
-/// 首次引导：无 current → 用 latest 直接启动（启动本身就是验证：就绪探测 HTTP 200）；
-/// 有 current → 直接按锁定版本启动（npx 解析缓存或下载）。由 main 后台线程调度。
+/// 首次引导：无 current → 用 latest 直接启动（启动本身就是验证：就绪探测 HTTP 200；
+/// 不查 registry——避免启动时联网，加快启动；npx 会自动解析 latest）。
+/// 有 current → 直接按锁定版本启动。由 main 后台线程调度。
 pub fn bootstrap(cfg: &AppConfig) -> bool {
     let state = runtime::load_state();
     let ver = match state.current {
         Some(v) => v,
-        None => match latest_from_registry() {
-            Ok(v) => {
-                append_log(&format!("首次引导：锁定最新版本 {v}"));
-                // 首次无需冒烟：启动 + 就绪探测即验证（省一次下载耗时）。
-                // npx 首次需下载 dsh 依赖树（含 koffi 原生包，可能 1-3 分钟），
-                // 明确阶段提示（start 不会覆盖非空 stage）
-                supervisor::set_stage("首次启动：下载 DSH（约 1-3 分钟）…");
-                v
-            }
-            Err(e) => {
-                append_log(&format!("首次引导失败（查询 registry）: {e}"));
-                return false;
-            }
-        },
+        None => {
+            append_log("首次引导：使用最新版本启动（npx 自动解析）");
+            supervisor::set_stage("首次启动：下载 DSH（约 1-3 分钟）…");
+            "latest".to_string()
+        }
     };
     match supervisor::start(cfg, &ver) {
         Ok(()) => {
-            // 持久化锁定版本：state.json 记录 current，后续运行不再依赖 registry 查询
+            // 持久化锁定版本：state.json 记录 current（后续启动不再依赖 registry/npx 解析）
             let mut st = runtime::load_state();
             if st.current.as_deref() != Some(ver.as_str()) {
                 st.current = Some(ver.clone());

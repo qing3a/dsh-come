@@ -23,5 +23,13 @@ resvg = { version = "0.44", default-features = false }
 # 托盘图标颜色跟随系统主题（浅色任务栏用黑 logo、深色用白 logo）
 winreg = "0.52"
 
+[build-dependencies]
+# 把 resources/icon.ico 嵌入 exe（资源管理器/任务栏图标）
+embed-resource = "3"
+
+[dev-dependencies]
+# 一次性生成 icon.ico 用（examples/gen_icon.rs；不进入主 exe 依赖图）
+png = "0.17"
+
 [profile.release]
 strip = true

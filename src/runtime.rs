@@ -76,11 +76,13 @@ pub struct VersionEvent {
     pub detail: String,
 }
 
-/// 启动器持久状态：当前锁定版本 + 验证历史
+/// 启动器持久状态：当前锁定版本 + 待确认更新 + 验证历史
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
     /// 当前锁定版本（如 "0.1.0-rc.6"）；None = 尚未安装任何版本
     pub current: Option<String>,
+    /// 已验证通过、待用户确认应用的版本（托盘菜单「应用更新」触发切换）
+    pub pending: Option<String>,
     /// 验证失败的版本（切换/回滚时跳过）
     pub known_bad: Vec<String>,
     /// 验证历史（最近事件，最多 50 条）
