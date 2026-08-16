@@ -1,4 +1,4 @@
-# dsh-companion｜DSH 伴侣 — 设计文档
+# dsh-come｜DSH 伴侣 — 设计文档
 
 > 把 DeepSeek Harness（dsh）变成「双击即用」的 Windows 桌面 App：捆绑 Node、钉版安装、
 > 自动更新（验证通过才切换）、崩溃自愈。面向懂点开发但不想碰 Node/终端的人。
@@ -11,14 +11,14 @@
 
 | 项 | 决定 | 理由 |
 |---|---|---|
-| 仓库名 | `dsh-companion`（2026-08-16 由 `dsh-desktop` 更名） | 保留 `dsh-` 家族前缀；`dsh-desktop` 已三方撞车（qing3a / dataelement / SnowCrescenter-tech 同名，其中一家定位/文案雷同），改名规避搜索混淆；`companion` 与产品名「DSH 伴侣」字面对应 |
+| 仓库名 | `dsh-come`（2026-08-16 更名：`dsh-desktop` → `dsh-companion` → `dsh-come`） | 保留 `dsh-` 前缀；`dsh-desktop` 三方撞车（qing3a / dataelement / SnowCrescenter-tech 同名）故弃；`companion` 与中文「伴侣」对应但偏长，二次定名 `come`；改名均发生在任何公开引用前，无迁移代价 |
 | 产品显示名 | **DSH 伴侣**（2026-08-14 用户由「DSH 桌面版」更名） | 小白看到的托盘/窗口/README 首屏用中文；不用纯「DeepSeek」规避官方误导；「伴侣」贴切「伴随 DSH 的管家/入口」语义 |
 | 目标用户 | 定位 A：懂点开发、被 CLI/Node 劝退的人 | 真正纯小白需要模板化 workspace（harness 侧问题），不是启动器能补的 |
 | 生态角色 | **进程外 supervisor**，不是插件 | 不做任何进程内逻辑（waterfall / settings 热改 / ctx.inject 全留给 TS 插件） |
 | 依赖方向 | launcher → verify（v2 收编验证引擎） | 单向依赖，不跨语言合并 |
 
 命名备选（查证过，未选）：`dsh-box`（品牌化但需解释）、`dsh-go`（抽象且撞 Go 语言）、
-`dsh-desktop` npm 名已被占用（SnowCrescenter-tech/dsh-desktop 发布，0.2.0）；本项目不发 npm（走 GitHub Releases 分发 exe），改名后 `dsh-companion` 在 npm/GitHub 均无占用。运行时数据路径保留 `%LOCALAPPDATA%\dsh-desktop` 不变（已有用户数据不迁移）。
+`dsh-desktop` npm 名已被占用（SnowCrescenter-tech/dsh-desktop 发布，0.2.0）；本项目不发 npm（走 GitHub Releases 分发 exe），定名 `dsh-come`（npm/GitHub 均无占用，待占位注册）。运行时数据路径保留 `%LOCALAPPDATA%\dsh-desktop` 不变（已有用户数据不迁移）。
 
 ## 2. 为什么不做「npx 自动最新」
 
@@ -34,7 +34,7 @@
 ## 3. 架构总览
 
 ```
-dsh-companion.exe（Rust 单 exe，Windows 优先）
+dsh-come.exe（Rust 单 exe，Windows 优先）
 ├── supervisor   spawn dsh web（npx 通道）；崩溃重启（退避+上限）；滚动日志
 ├── tray         托盘图标/菜单（打开界面/插件市场/检查更新/日志/退出）；自动开浏览器
 ├── updater      npm registry 版本检查 → 冒烟验证 → 切换/回滚（state.current）
@@ -111,7 +111,7 @@ upstream break 时是显式升级契约，而不是暗中碎掉。
 
 PWA 是「界面层」的事，不是「启动器层」的事，不改变本设计任何架构：
 
-- **含义 A（启动器本身做成 PWA）**：❌ 架构矛盾——PWA 不能 spawn 子进程 / 托盘常驻 / 开机自启 / 崩溃自愈 / 本地版本管理，这些恰是 dsh-companion 的存在理由。
+- **含义 A（启动器本身做成 PWA）**：❌ 架构矛盾——PWA 不能 spawn 子进程 / 托盘常驻 / 开机自启 / 崩溃自愈 / 本地版本管理，这些恰是 dsh-come 的存在理由。
 - **含义 B（Web UI 安装成独立窗口）**：✅ 官方已铺路（localhost 是 secure context，manifest 在），我们**消费**它而不是造它。
 - **含义 C（补 sw 离线缓存）**：❌ 对 localhost 服务无意义且有害（陈旧 UI 缓存）。
 
@@ -170,7 +170,7 @@ PWA 是「界面层」的事，不是「启动器层」的事，不改变本设�
 | 来源 | 复用点 |
 |---|---|
 | `md-agent`（`Desktop\md-agent`） | tray-icon + winit 桌面壳已验证；`dist/md-agent.exe` 打包模式 |
-| `md-agent\src\engine.rs` | **supervisor 完整参考**（318 行）：`cmd /C` 包装、日志重定向防阻塞、1s 轮询 + 限次自动重启、`taskkill /T /F` 杀进程树、退出清理钩子、start 幂等。差异：dsh-companion 走 npx 通道（node 直启 npx-cli.js，免 cmd /C）+ 重启**退避**（md-agent 是固定 1s）+ HTTP 就绪探测 |
+| `md-agent\src\engine.rs` | **supervisor 完整参考**（318 行）：`cmd /C` 包装、日志重定向防阻塞、1s 轮询 + 限次自动重启、`taskkill /T /F` 杀进程树、退出清理钩子、start 幂等。差异：dsh-come 走 npx 通道（node 直启 npx-cli.js，免 cmd /C）+ 重启**退避**（md-agent 是固定 1s）+ HTTP 就绪探测 |
 | `dsh-tray` | EBUSY / 双托盘 / iconPath ENOENT 踩坑；headless 降级 |
 | `native/landlock-run` | cli-contract.md 模式；平台分包发布模式 |
 | `dsh-plugin-verify` | 验证引擎（v2 收编为库 `@qing3a/dsh-runtime-verify`） |

@@ -88,7 +88,7 @@ fn print_help() {
     println!(
         "DSH 伴侣 — 双击即用的 DeepSeek Harness\n\
          \n\
-         用法: dsh-companion [--port <端口>] [--no-tray]\n\
+         用法: dsh-come [--port <端口>] [--no-tray]\n\
          \n\
          环境变量:\n\
            DSH_DESKTOP_HOME   数据根目录（默认 %LOCALAPPDATA%\\dsh-desktop）\n\

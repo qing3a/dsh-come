@@ -1,11 +1,20 @@
-# dsh-companion（原 dsh-desktop）｜项目记忆（方向与决策记录）
+# dsh-come（原 dsh-desktop）｜项目记忆（方向与决策记录）
 
 > 本文档是本项目长期记忆：记录方向决策、参考项目、技术选型与踩坑。
 > 改动方向前先读这里；新增决策按时间追加，保留历史不删改。
 
-状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **更名 dsh-companion（2026-08-16）**：仓库/二进制/产品名从 dsh-desktop 改为 dsh-companion（`dsh-desktop` 在 GitHub 三方撞车 + npm 被占），运行时数据路径不变（见文末）。
+状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **定名 dsh-come（2026-08-16）**：dsh-desktop → dsh-companion → dsh-come 两次更名，均在公开引用前完成；运行时数据路径不变（见 §0.6）。
 
-## 0.5 更名 dsh-companion（2026-08-16）
+## 0.6 定名 dsh-come（2026-08-16，当日第二次更名）
+
+- **链路**：`dsh-desktop`（初始）→ 同日发现 GitHub 三方撞车（dataelement / SnowCrescenter-tech 同名，npm 名亦被占）→ 更名 `dsh-companion`（与中文「伴侣」对应）→ 用户拍板定名 `dsh-come`。
+- **时点**：全部发生在 Show&Tell 帖发布前、npm 注册前、任何公开引用前——GitHub 改名后旧名 301 转发 + 保留 60 天，无迁移代价。
+- **当前定名**：仓库 `qing3a/dsh-come` / 二进制 `dsh-come.exe` / 自启项 "DSH Come" / 远程清单 `raw.githubusercontent.com/qing3a/dsh-come/master/verified-plugins.json`。产品显示名 **DSH 伴侣** 不变。
+- **数据路径不变**：`%LOCALAPPDATA%\dsh-desktop` 与 `DSH_DESKTOP_*` 环境变量保持（已有用户数据不迁移）。
+- **自启迁移**：`set_autostart(true)` 删除 "DSH Desktop" 与 "DSH Companion" 两个旧注册表项。
+- 本文档历史条目中的旧名保留（历史记录不删改），当前状态一律用 dsh-come。
+
+## 0.5 更名 dsh-companion（2026-08-16，当日第一次更名，已被 0.6 取代）
 
 - **触发**：调研 dsh-market 生态时发现 GitHub 上另有 dataelement/dsh-desktop（Electron 跨平台）与 SnowCrescenter-tech/dsh-desktop（Electron Windows，定位文案与我们几乎雷同，npm 名 dsh-desktop 0.2.0 亦为其发布）——「dsh-desktop」三方撞车。
 - **决策**：仓库名/二进制名（dsh-companion.exe）/自启项（"DSH Companion"）/远程清单 URL 全部改为 dsh-companion（npm + GitHub 均无占用）；产品显示名 **DSH 伴侣** 不变；**运行时数据路径 `%LOCALAPPDATA%\dsh-desktop` 与环境变量 DSH_DESKTOP_* 保持不变**（已有用户数据不迁移）。

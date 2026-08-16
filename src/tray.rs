@@ -731,13 +731,13 @@ pub fn open_dir(dir: &std::path::Path) {
 // ---------- 开机自启（HKCU Run，无需管理员权限） ----------
 
 const AUTOSTART_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const AUTOSTART_NAME: &str = "DSH Companion";
+const AUTOSTART_NAME: &str = "DSH Come";
 
 /// 当前 exe 路径（自启项目标；带引号防路径空格）
 fn autostart_target() -> String {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "dsh-companion.exe".to_string());
+        .unwrap_or_else(|_| "dsh-come.exe".to_string());
     format!("\"{exe}\"")
 }
 
@@ -761,8 +761,9 @@ pub fn set_autostart(on: bool) -> std::io::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu.open_subkey_with_flags(AUTOSTART_KEY, KEY_WRITE)?;
     if on {
-        // 清理旧名（dsh-desktop 时代）的注册表残留，避免双自启项指向旧 exe
+        // 清理旧名（dsh-desktop / dsh-companion 时代）的注册表残留，避免多自启项指向旧 exe
         let _ = key.delete_value("DSH Desktop");
+        let _ = key.delete_value("DSH Companion");
         key.set_value(AUTOSTART_NAME, &autostart_target())?;
     } else {
         let _ = key.delete_value(AUTOSTART_NAME);

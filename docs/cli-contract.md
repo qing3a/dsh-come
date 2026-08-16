@@ -1,4 +1,4 @@
-# dsh-companion ↔ dsh CLI 契约（v1）
+# dsh-come ↔ dsh CLI 契约（v1）
 
 启动器只依赖以下稳定表面。任何一项被 upstream 破坏 → 显式升级本文件并 bump 启动器版本；
 启动器**不**解析 CLI 输出、**不**读 dsh 内部文件、**不**碰插件 API（鸭子类型原则）。

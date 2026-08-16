@@ -1,5 +1,5 @@
 [package]
-name = "dsh-companion"
+name = "dsh-come"
 version = "0.1.0"
 edition = "2021"
 description = "DSH 伴侣：把 DeepSeek Harness 变成双击即用的 Windows 桌面 App（捆绑 Node + 钉版安装 + 验证式自动更新 + 崩溃自愈）"
