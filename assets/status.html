@@ -104,8 +104,15 @@
 <div class="card">
   <h2>版本</h2>
   <div class="row"><span class="label">当前锁定版本</span><span id="ver-current" class="value">—</span></div>
+  <div class="row"><span class="label">回滚目标</span><span id="ver-previous" class="value">—</span></div>
   <div class="row"><span class="label">待确认更新</span><span id="ver-pending" class="value">—</span></div>
   <div class="row"><span class="label">失败记录</span><span id="ver-known-bad" class="value">—</span></div>
+</div>
+
+<div class="card">
+  <h2>插件市场（<span id="market-state">—</span>）</h2>
+  <div class="row"><span class="label">dsh-market</span><span id="market-status" class="value">—</span></div>
+  <div class="row"><span class="label">使用</span><span class="value">打开界面 → 设置 → 插件市场（浏览/搜索/一键安装社区插件）</span></div>
 </div>
 
 <div class="card">
@@ -159,8 +166,17 @@
 
       // 版本
       $("ver-current").textContent = s.version.current || "未安装";
+      $("ver-previous").textContent = s.version.previous
+        ? `v${s.version.previous}（托盘「回滚到 v${s.version.previous}」）`
+        : "—";
       $("ver-pending").textContent = s.version.pending ? `v${s.version.pending}（托盘菜单应用更新）` : "—";
       $("ver-known-bad").textContent = s.version.known_bad.length ? s.version.known_bad.join("、") : "—";
+
+      // 插件市场（dsh-market）
+      $("market-state").textContent = s.market_installed ? "已安装" : "未安装";
+      $("market-status").textContent = s.market_installed
+        ? "● 已安装（打开界面 → 设置 → 插件市场）"
+        : "○ 未安装（托盘「安装插件市场」一键安装，装完重启引擎）";
 
       // 插件
       $("plugin-count").textContent = s.plugins.length;

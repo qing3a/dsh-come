@@ -12,23 +12,5 @@
     "requires": ["md-api（Desktop/md-api，默认 8080）"],
     "verify_evidence": "e2e-v2..v5 共 95 项全绿（.test/）",
     "tags": ["猎头协作"]
-  },
-  {
-    "id": "@qing3a/dsh-event-auditor",
-    "name": "事件审计",
-    "version": "0.4",
-    "verified": true,
-    "desc": "事件 waterfall 审计 + /audit 静态页（settings 热改）",
-    "repo": "github.com/qing3a/dsh-event-auditor",
-    "tags": ["事件审计"]
-  },
-  {
-    "id": "@dsh-external/dsh-tray",
-    "name": "内置托盘增强",
-    "version": "0.1",
-    "verified": true,
-    "desc": "进程内托盘（气泡通知）。DSH 伴侣已自带托盘，一般无需安装",
-    "repo": "github.com/qing3a/dsh-tray",
-    "tags": ["托盘与效率"]
   }
 ]

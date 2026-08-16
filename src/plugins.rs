@@ -57,9 +57,23 @@ impl PluginInfo {
     }
 }
 
+/// 可视化插件市场（dsh-market）的 npm 包名：`dsh plugin add dshmarket` 装进 web profile，
+/// 入口在 dsh web 的 Settings → Plugin Market（浏览/搜索/一键安装 800+ 插件）。
+/// dsh-come 市场策略（2026-08-17）：单件工具目录交给 dsh-market，壳内置清单只保留
+/// 工作台（kind=workbench，dsh-market 无此分组概念）——托盘「市场」菜单引导安装/打开市场，
+/// 工作台分组 + 壳管理页「工作台」卡片保持差异化入口。
+pub const MARKET_PLUGIN_ID: &str = "dshmarket";
+
+/// 可视化插件市场（dsh-market）是否已安装（web profile 的 dependencies 含 dshmarket）
+pub fn market_installed() -> bool {
+    installed_plugins().iter().any(|p| p == MARKET_PLUGIN_ID)
+}
+
 /// 内置可信清单（v1 固定；v2 改为从 verified.json GitHub raw 拉取）。
 /// 只放运行时验证 ✅ 的插件——这是差异化数据（286 个插件仅极少数有验证证据）。
-/// 工作台（kind=workbench）与单件工具（tool）混列，市场展示时工作台优先。
+/// 2026-08-17 起只保留工作台（kind=workbench）：单件工具目录由 dsh-market 提供
+/// （Settings → Plugin Market），壳不再内置工具清单；远程 verified-plugins.json
+/// 若含 tool 条目仍兼容展示（marketplace_groups 的 tool 分组逻辑保留）。
 pub fn builtin_marketplace() -> Vec<PluginInfo> {
     vec![
         // 工作台：猎头协作（本地资产形态，entry 指向本机 index.html；经 md-api MCP 协作）
@@ -76,34 +90,6 @@ pub fn builtin_marketplace() -> Vec<PluginInfo> {
             requires: vec!["md-api（Desktop/md-api，默认 8080）".to_string()],
             verify_evidence: Some("e2e-v2..v5 共 95 项全绿（.test/）".to_string()),
             tags: vec!["猎头协作".to_string()],
-        },
-        PluginInfo {
-            id: "@qing3a/dsh-event-auditor".to_string(),
-            name: "事件审计".to_string(),
-            version: "0.4".to_string(),
-            verified: true,
-            desc: "事件 waterfall 审计 + /audit 静态页（settings 热改）".to_string(),
-            repo: Some("github.com/qing3a/dsh-event-auditor".to_string()),
-            kind: String::new(),
-            scenario: String::new(),
-            entry: None,
-            requires: vec![],
-            verify_evidence: None,
-            tags: vec!["事件审计".to_string()],
-        },
-        PluginInfo {
-            id: "@dsh-external/dsh-tray".to_string(),
-            name: "内置托盘增强".to_string(),
-            version: "0.1".to_string(),
-            verified: true,
-            desc: "进程内托盘（气泡通知）。DSH 伴侣已自带托盘，一般无需安装".to_string(),
-            repo: Some("github.com/qing3a/dsh-tray".to_string()),
-            kind: String::new(),
-            scenario: String::new(),
-            entry: None,
-            requires: vec![],
-            verify_evidence: None,
-            tags: vec!["托盘与效率".to_string()],
         },
     ]
 }
@@ -362,7 +348,7 @@ mod tests {
         wb.scenario = "猎头协作".to_string();
         let mut tool = p("@a/x", "1.0");
         tool.tags = vec!["事件审计".to_string()];
-        let mut untagged = p("@b/y", "1.0");
+        let untagged = p("@b/y", "1.0");
         let catalog = vec![tool.clone(), untagged.clone(), wb.clone()];
         let groups = marketplace_groups(&catalog);
         assert_eq!(groups.len(), 2, "工作台场景 + 工具标签各一组，无标签工具不进分组");
@@ -402,5 +388,21 @@ mod tests {
     #[test]
     fn groups_empty_catalog() {
         assert!(marketplace_groups(&[]).is_empty());
+    }
+
+    /// dsh-market 未安装时 market_installed() 为 false（installed_plugins 读 profile package.json，
+    /// 测试环境无 profile → 空列表）
+    #[test]
+    fn market_installed_false_without_profile() {
+        assert!(!market_installed(), "无 profile（测试环境）时不应判定已安装");
+    }
+
+    /// 内置清单自 2026-08-17 起只保留工作台（单件工具目录交给 dsh-market）
+    #[test]
+    fn builtin_catalog_contains_only_workbench() {
+        let cat = builtin_marketplace();
+        assert!(!cat.is_empty(), "至少保留工作台入口");
+        assert!(cat.iter().all(|p| p.is_workbench()), "内置清单不再含单件工具");
+        assert!(cat.iter().any(|p| p.id == "md-hr"), "猎头协作工作台保留");
     }
 }

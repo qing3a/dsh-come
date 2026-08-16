@@ -33,11 +33,14 @@ struct TrayIds {
     open_sys: MenuId,
     update: MenuId,
     apply: MenuId,
+    rollback: MenuId,
     restart: MenuId,
     autostart: MenuId,
     status: MenuId,
     logs: MenuId,
     quit: MenuId,
+    /// 插件市场（dsh-market）：已装 → 打开市场引导；未装 → 一键安装
+    market: MenuId,
 }
 
 struct App {
@@ -87,6 +90,31 @@ impl ApplicationHandler<UserEvent> for App {
                 } else if ev.id == self.ids.status {
                     // 壳管理页：独立窗口打开（跟随向导页的浏览器窗口方案）
                     crate::status_page::open();
+                } else if ev.id == self.ids.market {
+                    // 插件市场（dsh-market）：已装 → 打开界面提示进 Settings → Plugin Market；
+                    // 未装 → 一键安装（dsh plugin add dshmarket，后台执行，完成后提示重启引擎）
+                    if plugins::market_installed() {
+                        open_browser(&self.url);
+                        supervisor::set_flash("插件市场已装：打开界面后进「设置 → 插件市场」");
+                    } else {
+                        let proxy = self.proxy.clone();
+                        let url = self.url.clone();
+                        std::thread::spawn(move || {
+                            let cfg = config::load();
+                            match plugins::install_plugin(&cfg, plugins::MARKET_PLUGIN_ID) {
+                                Ok(m) => {
+                                    supervisor::log(&format!("插件市场安装成功: {m}"));
+                                    supervisor::set_flash("插件市场安装成功：重启引擎后进「设置 → 插件市场」");
+                                    open_browser(&url);
+                                }
+                                Err(e) => {
+                                    supervisor::log(&format!("插件市场安装失败: {e}"));
+                                    supervisor::set_flash(&format!("插件市场安装失败: {e}"));
+                                }
+                            }
+                            let _ = proxy.send_event(UserEvent::PluginDone);
+                        });
+                    }
                 } else if ev.id == self.ids.update {
                     // 后台线程检查更新（可能联网下载耗时）；完成后回传事件重建菜单。
                     // 结果不自动切换：验证通过只存 pending，菜单出现「应用更新」由用户确认。
@@ -120,6 +148,27 @@ impl ApplicationHandler<UserEvent> for App {
                             Err(e) => {
                                 supervisor::log(&format!("应用更新失败: {e}"));
                                 supervisor::set_flash(&format!("应用更新失败: {e}"));
+                            }
+                        }
+                        let _ = proxy.send_event(UserEvent::UpdateDone);
+                    });
+                } else if ev.id == self.ids.rollback {
+                    // 一键回滚到上一版本（升级后新版实际跑不起来时）：切换 current↔previous → 重启引擎
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        match updater::rollback() {
+                            Ok(ver) => {
+                                supervisor::log(&format!("回滚到 v{ver}，正在重启引擎…"));
+                                supervisor::set_flash(&format!("回滚到 v{ver}，正在重启引擎…"));
+                                let cfg = config::load();
+                                match supervisor::restart(&cfg, &ver) {
+                                    Ok(()) => supervisor::log("引擎已用回滚版本重启"),
+                                    Err(e) => supervisor::log(&format!("引擎重启失败（重启后生效）: {e}")),
+                                }
+                            }
+                            Err(e) => {
+                                supervisor::log(&format!("回滚失败: {e}"));
+                                supervisor::set_flash(&format!("回滚失败: {e}"));
                             }
                         }
                         let _ = proxy.send_event(UserEvent::UpdateDone);
@@ -290,7 +339,26 @@ pub fn run_tray(url: &str) {
             let _ = proxy.send_event(UserEvent::MarketDone);
         });
     }
-    // 不做启动自动检查更新（加快启动速度，用户需要时手动「检查更新」）
+    // 启动延迟静默检查更新（不打扰）：启动 10s 后后台查一次 registry，发现新版本且验证通过
+    // → 菜单出现「应用更新」+ 状态行 ⚑ 提示（用户确认才切换）；已最新/离线/失败全静默
+    // （记日志，不弹提示），用户可随时手动「检查更新」。首次引导（无 current）跳过——
+    // bootstrap 已用 latest 启动，无需再查。
+    {
+        let proxy = event_loop.create_proxy();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if runtime::load_state().current.is_none() {
+                return;
+            }
+            let cfg = config::load();
+            match updater::check_and_install(&cfg) {
+                updater::UpdateResult::UpToDate(v) => supervisor::log(&format!("启动检查：已是最新版本 {v}")),
+                updater::UpdateResult::Pending(v) => supervisor::log(&format!("启动检查：发现新版本 {v}（已验证，菜单「应用更新」确认）")),
+                updater::UpdateResult::Failed(e) => supervisor::log(&format!("启动检查更新失败（静默）: {e}")),
+            }
+            let _ = proxy.send_event(UserEvent::UpdateDone);
+        });
+    }
 
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("托盘事件循环错误: {e}");
@@ -317,6 +385,19 @@ fn build_menu() -> (Menu, TrayIds) {
             None,
         )
     });
+    // 有上一版本可回滚（且与当前不同）→ 菜单「回滚到 vX」（升级后新版实际跑不起来时一键切回）
+    let rollback_item = state
+        .previous
+        .as_ref()
+        .filter(|v| state.current.as_deref() != Some(v.as_str()))
+        .map(|v| {
+            MenuItem::with_id(
+                "rollback",
+                format!("回滚到 v{v}"),
+                true,
+                None,
+            )
+        });
     let restart_item = MenuItem::new("重启引擎", true, None);
     let status_item_page = MenuItem::new("运行状态（壳管理页）", true, None);
     let autostart_item = CheckMenuItem::with_id(
@@ -329,16 +410,27 @@ fn build_menu() -> (Menu, TrayIds) {
     let logs_item = MenuItem::new("打开日志目录", true, None);
     let quit_item = MenuItem::new("退出", true, None);
 
+    // 插件市场（dsh-market）：已装 → 打开市场（Settings → Plugin Market）；未装 → 一键安装
+    let market_item = MenuItem::with_id(
+        "plugin-market",
+        if plugins::market_installed() { "打开插件市场（dsh-market）" } else { "安装插件市场（dsh-market）" },
+        true,
+        None,
+    );
     let market_sub = build_market_submenu();
 
     let menu = Menu::new();
     let _ = menu.append(&status_item);
     let _ = menu.append(&open_item);
     let _ = menu.append(&open_sys_item);
+    let _ = menu.append(&market_item);
     let _ = menu.append(&market_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&update_item);
     if let Some(item) = &apply_item {
+        let _ = menu.append(item);
+    }
+    if let Some(item) = &rollback_item {
         let _ = menu.append(item);
     }
     let _ = menu.append(&restart_item);
@@ -353,25 +445,34 @@ fn build_menu() -> (Menu, TrayIds) {
         open_sys: open_sys_item.id().clone(),
         update: update_item.id().clone(),
         apply: apply_item.as_ref().map(|i| i.id().clone()).unwrap_or_else(|| MenuId::new("apply-update-none")),
+        rollback: rollback_item.as_ref().map(|i| i.id().clone()).unwrap_or_else(|| MenuId::new("rollback-none")),
         restart: restart_item.id().clone(),
         autostart: autostart_item.id().clone(),
         status: status_item_page.id().clone(),
         logs: logs_item.id().clone(),
         quit: quit_item.id().clone(),
+        market: market_item.id().clone(),
     };
     (menu, ids)
 }
 
-/// 市场子菜单：工作台按场景分组优先 + 单件工具按标签分组 + 「全部」完整列表。
-/// 工作台条目（kind=workbench，有 entry）点击 = 打开本地资产（不装/卸 npm 包）；
-/// 单件工具 = 装/卸（后台执行）。分组子菜单的项 id 附 `|组名` 后缀，
-/// 事件处理时剥离（见 plugin_id_from_menu）。
+/// 市场子菜单：首行 dsh-market 状态（已装/未装，详见托盘一级菜单「安装/打开插件市场」）；
+/// 工作台按场景分组优先（kind=workbench，有 entry 的点击 = 打开本地资产）；
+/// 单件工具（远程清单若含 tool 条目）按标签分组 + 装/卸（契约 C5）。
+/// 分组子菜单的项 id 附 `|组名` 后缀，事件处理时剥离（见 plugin_id_from_menu）。
 fn build_market_submenu() -> Submenu {
     let sub = Submenu::new("市场", true);
     let installed = plugins::installed_plugins();
     let catalog = plugins::market_catalog();
+    // 首行：可视化插件市场（dsh-market）状态引导
+    let market_state = if plugins::market_installed() {
+        "插件市场（dsh-market）● 已安装"
+    } else {
+        "插件市场（dsh-market）○ 未安装"
+    };
+    let _ = sub.append(&MenuItem::new(market_state, false, None));
     if catalog.is_empty() {
-        let _ = sub.append(&MenuItem::new("（暂无已验证插件）", false, None));
+        let _ = sub.append(&MenuItem::new("（暂无已验证工作台）", false, None));
         return sub;
     }
     let groups = plugins::marketplace_groups(&catalog);
@@ -568,6 +669,8 @@ mod icon_tests {
     /// 窗口几何参数：未记录过 → 空（浏览器默认位置/大小）；记录过 → 带 --window-position/--window-size
     #[test]
     fn window_flags_from_config() {
+        // 与 updater 的更新闭环测试共用进程级 DSH_DESKTOP_HOME，必须串行
+        let _guard = crate::runtime::DSH_HOME_TEST_LOCK.lock().unwrap();
         // 隔离 home，避免污染真实 config.json
         let tmp = std::env::temp_dir().join(format!("dsh-wflags-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);

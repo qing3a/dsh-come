@@ -38,8 +38,8 @@ dsh-come.exe（Rust 单 exe，Windows 优先）
 ├── supervisor   spawn dsh web（npx 通道）；崩溃重启（退避+上限）；滚动日志
 ├── tray         托盘图标/菜单（打开界面/插件市场/检查更新/日志/退出）；自动开浏览器
 ├── updater      npm registry 版本检查 → 冒烟验证 → 切换/回滚（state.current）
-└── plugins      市场：**工作台优先**（kind=workbench 按场景分组 + 打开入口）+ 单件工具（装/卸，契约 C5）；
-                清单 = 内置兜底 + 远程 verified-plugins.json 合并（离线回退，见 §7.6）
+└── plugins      插件市场 dsh-market（托盘一键安装/打开 → Settings → Plugin Market，800+ 社区插件）
+                 + 工作台（kind=workbench 场景分组 + 打开入口）；清单 = 内置兜底 + 远程合并（见 §7.6）
 ```
 
 运行时目录布局：
@@ -77,14 +77,20 @@ upstream break 时是显式升级契约，而不是暗中碎掉。
 ## 5. 更新流程（验证通过才切换）
 
 ```
-用户点「检查更新」或启动时后台静默检查
+启动延迟 10s 静默检查 或 用户点「检查更新」
   → GET registry.npmjs.org/@deepseek-ai/dsh → dist-tags.latest
   → 有新版本 → 冒烟验证（npx 自动下载/缓存该版本）：
       v1: npx 起 dsh web 到临时端口 + HTTP 200 + 杀树干净退出
       v2: 复用 mock-llm 跑 waterfall 链（把 dsh-plugin-verify 引擎收编成库）
-  → 通过 → state.json 切换 default + 标记「已验证」（下次启动生效；运行中提示重启）
-  → 失败 → 标记「此版本不可用」，保留旧版本号回滚，小白无感知
+  → 通过 → state.pending + 标记「已验证」（菜单「应用更新」由用户确认后切换；运行中提示重启）
+  → 失败 → 标记「此版本不可用」（known_bad），保留旧版本号回滚，小白无感知
 ```
+
+**静默检查与回滚（2026-08-17）**：启动 10s 后后台静默检查一次（不阻塞启动；首次引导跳过），
+发现新版本且验证通过 → 托盘菜单「应用更新」+ 状态行 ⚑ 提示，**确认才切换**（不打断会话）；
+离线/已最新/失败全静默仅记日志。应用更新时旧版本记入 `state.previous`，托盘「回滚到 vX」
+一键切回（current ↔ previous 交换，可来回切换，切换后自动重启引擎）——升级后新版实际跑不起来
+时，不用手动改 state.json。
 
 ### 可信版本通道（v2，差异化护城河）
 
@@ -96,7 +102,7 @@ upstream break 时是显式升级契约，而不是暗中碎掉。
 
 - **启动器与 DSH 版本解耦**：exe 更新走 GitHub Releases（manifest + 原子替换）；DSH 的已验证清单走 GitHub raw JSON。launcher 发版不卡 DSH 验证，反之亦然。
 - 小白默认跟随「已验证」版本，不追 latest。
-- 上一版本保留 = 回滚通道（一键回滚按钮 v2）。
+- 上一版本保留 = 回滚通道（一键回滚按钮 ✅ 2026-08-17，state.previous）。
 
 ## 7. 对上游契约漂移的韧性
 
@@ -139,6 +145,17 @@ PWA 是「界面层」的事，不是「启动器层」的事，不改变本设�
 壳不代启动工作台的外部依赖服务（requires 打开前提示即可）。
 收录/上架流程详见 `docs/market.md`。
 
+**2026-08-17 更新：单件工具目录交给 dsh-market，壳保留工作台差异化**。用户拍板改用
+[dsh-market](https://github.com/dsh-market/dsh-market)（DSH 可视化插件市场，Settings → Plugin Market）
+作为插件目录：它是 DSH 生态内的一等公民（`dsh plugin add dshmarket` 装进 web profile），已具备
+浏览/搜索 800+ 插件、主题、逐插件更新、备份恢复、诊断等能力，远超壳内自研清单的性价比；
+其目录来自 awesome-dsh-plugin 策展注册表（`awesome-dsh-plugin.com/plugins.json`，每日 CI 刷新），
+上架走该注册表 PR。**壳侧变化**：托盘「市场」改为「安装/打开插件市场」引导（未装一键 `dsh plugin add
+dshmarket`）；内置/远程清单只保留工作台（kind=workbench——dsh-market 没有工作台分组概念，场景整包
+入口仍是壳的差异化）；spawn dsh 时经 `--patch` 挂壳 patch overlay（`home\come.patch.yml`）写
+`dsh-market.config.allowRestart: false`——dsh-market 的 detached 一键重启默认开启，会绕过壳的
+supervisor（崩溃自愈/退避/日志），必须禁掉由壳接管重启。
+
 ## 8. MVP 范围
 
 | 模块 | v1（已实现） | v2 |
@@ -147,7 +164,7 @@ PWA 是「界面层」的事，不是「启动器层」的事，不改变本设�
 | 固定端口 + HTTP 健康探测 | ✅ | |
 | 崩溃重启（退避+健康期重置）+ 滚动日志 | ✅ | |
 | registry 检查 + 冒烟验证 + 切换/回滚 | ✅ | |
-| 市场（工作台优先 + 单件工具装/卸） | ✅（2026-08-16：workbench 形态/场景分组/打开入口/依赖提示） | 验证引擎增量产出 |
+| 市场（插件市场 dsh-market + 工作台分组） | ✅（2026-08-17：插件市场引导 + 工作台保留；原内置单件工具清单移交 dsh-market） | 验证引擎增量产出 |
 | 托盘（官方 logo 主题感知 / 悬停稳定 / 状态行分阶段） | ✅ | |
 | 自动开浏览器 + `--app` 独立窗口（桌面 App 化） | ✅ | |
 | 重启引擎 + 开机自启（HKCU Run） | ✅ | |

@@ -65,6 +65,39 @@ pub fn state_path() -> PathBuf {
     root_dir().join("state.json")
 }
 
+/// 测试专用：串行化会改写进程级 `DSH_DESKTOP_HOME` 的测试（updater 更新-回滚闭环 /
+/// tray 窗口几何记忆），避免并行测试踩踏 state.json/config.json 的实际落盘位置。
+#[cfg(test)]
+pub(crate) static DSH_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 壳维护的 patch overlay 路径（home\come.patch.yml）：spawn dsh web 时经 `--patch`
+/// 传入（CLI 契约面用法，不写 profile 内部文件）。当前内容：dsh-market 安装后
+/// 禁用其 detached 一键重启（重启归 supervisor 管，防止绕过崩溃自愈/退避/日志）。
+pub fn come_patch_path() -> PathBuf {
+    home_dir().join("come.patch.yml")
+}
+
+/// 幂等写入 come.patch.yml（内容固定；已存在则跳过）。
+/// dsh-market 未安装时该覆盖条目在加载期仅 warn 一条（applyEntryPatches 对
+/// 未找到的 entry 报 warning 后跳过），无副作用。
+pub fn ensure_come_patch() -> std::io::Result<()> {
+    let p = come_patch_path();
+    if p.is_file() {
+        return Ok(());
+    }
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(
+        &p,
+        "# dsh-come 壳维护的 patch overlay：dsh-market 安装后禁止其 detached 一键重启\n\
+         # （dsh 进程由壳 supervisor 接管：崩溃自愈 / 退避重启 / 滚动日志）\n\
+         - id: dsh-market\n\
+         \x20 config:\n\
+         \x20   allowRestart: false\n",
+    )
+}
+
 // ---------- state.json ----------
 
 /// 版本事件（验证历史，供审计/回滚诊断）
@@ -76,11 +109,16 @@ pub struct VersionEvent {
     pub detail: String,
 }
 
-/// 启动器持久状态：当前锁定版本 + 待确认更新 + 验证历史
+/// 启动器持久状态：当前锁定版本 + 上一版本（回滚目标）+ 待确认更新 + 验证历史
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
     /// 当前锁定版本（如 "0.1.0-rc.6"）；None = 尚未安装任何版本
     pub current: Option<String>,
+    /// 上一个锁定的可用版本（回滚目标）：升级/应用更新时把旧 current 记于此，
+    /// 托盘「回滚到 vX」切回。None = 无历史（首次安装）。
+    /// #[serde(default)]：旧 state.json 无此字段时不炸（缺字段反序列化为 None）。
+    #[serde(default)]
+    pub previous: Option<String>,
     /// 已验证通过、待用户确认应用的版本（托盘菜单「应用更新」触发切换）
     pub pending: Option<String>,
     /// 验证失败的版本（切换/回滚时跳过）
@@ -119,6 +157,7 @@ pub fn ensure_layout() -> std::io::Result<()> {
     ] {
         std::fs::create_dir_all(d)?;
     }
+    ensure_come_patch()?;
     Ok(())
 }
 

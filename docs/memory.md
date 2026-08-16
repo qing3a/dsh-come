@@ -5,6 +5,43 @@
 
 状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **定名 dsh-come（2026-08-16）**：dsh-desktop → dsh-companion → dsh-come 两次更名，均在公开引用前完成；运行时数据路径不变（见 §0.6）。
 
+## 0.8 插件市场策略：dsh-market 协作（2026-08-17）
+
+用户拍板：**插件市场改用 [dsh-market](https://github.com/dsh-market/dsh-market)（DSH 可视化插件市场）**；
+工作台相关插件（如猎头协作）将来也会上架到该市场。
+
+- **dsh-market 是什么**：DSH 生态内的可视化市场插件——`dsh plugin --profile web add dshmarket` 装进
+  web profile，入口是 dsh web 的 **Settings → Plugin Market**（浏览/搜索 800+ 插件、主题热切、
+  逐插件更新、备份恢复、诊断页）。**它不是目录仓库**：商品目录来自 awesome-dsh-plugin 策展注册表
+  （`awesome-dsh-plugin.com/plugins.json`，每日 CI 刷新 + 离线快照兜底），上架走 **awesome-dsh-plugin
+  的 PR**（README 明确 "This repo is the market app, not the catalog"，不要在 dsh-market 仓库提交条目）。
+- **壳侧落地（本提交 2026-08-17）**：
+  - 托盘「市场」一级菜单改为「**安装/打开插件市场**」：未装 → 一键 `dsh plugin add dshmarket`（装完
+    提示重启引擎，重启后进 Settings → Plugin Market）；已装 → 打开界面引导。
+  - `builtin_marketplace()` 与 `verified-plugins.json` **只保留工作台**（kind=workbench）——dsh-market
+    没有工作台分组概念，场景整包入口是壳的差异化；远程清单若含 tool 条目仍兼容展示（marketplace_groups
+    的 tool 分组逻辑保留）。
+  - **come.patch.yml**（`home\come.patch.yml`，`ensure_come_patch()` 幂等写）：spawn dsh web 时经
+    `--patch` 挂载（supervisor::npx_argv / updater 冒烟同样挂载），内容 `dsh-market.config.allowRestart:
+    false`——**禁用 dsh-market 的 detached 一键重启**（默认开启），重启归壳 supervisor 管（崩溃自愈/
+    退避/日志），防止绕过守护。dsh-market 未安装时该覆盖条目在加载期仅 warn 一条，无副作用。
+  - patch 覆盖语义（本地核实 `@deepseek-ai/dsh-app-boot` 源码）：非 insert 条目 `{ id, config }` 即
+    覆盖目标 entry 配置；`--patch` 是 dsh CLI 顶层选项（`dsh --profile web --patch <path>`）。
+- **待办**：猎头协作（md-hr）插件化后走 awesome-dsh-plugin PR 进社区目录；壳侧已验证清单随验证引擎
+  增量产出时再同步。
+
+## 0.9 更新互动策略（2026-08-17）
+
+dsh 不定时发版，壳的更新交互补齐两件事（本提交）：
+
+- **启动延迟静默检查**：启动 10s 后后台查一次 registry（不阻塞启动；首次引导无 current 时跳过——
+  bootstrap 已用 latest 启动）。发现新版本且冒烟验证通过 → 托盘菜单出现「应用更新」+ 状态行 ⚑ 提示，
+  **用户确认才切换**（不打断会话）；已最新/离线/失败全静默（仅记日志），不打扰。用户仍可随时手动
+  「检查更新」。
+- **一键回滚**：`state.json` 新增 `previous` 字段（上一锁定版本，`#[serde(default)]` 兼容旧文件）——
+  应用更新时旧版本记入 previous，托盘出现「回滚到 vX」菜单项（current ↔ previous 交换，可来回切换），
+  切换后自动重启引擎。回滚依赖 npx 缓存（旧版缓存保留则离线可用，与 DESIGN §6 一致）。
+
 ## 0.7 工作区文件夹改名 dsh-come（2026-08-17，改名前操作）
 
 **操作**：关闭本会话后，把项目文件夹 `C:\Users\Administrator\Desktop\dsh-desktop` 重命名为 `C:\Users\Administrator\Desktop\dsh-come`，然后重新用本软件打开新文件夹（新工作区）继续。
@@ -115,6 +152,17 @@
 - `docs/cli-contract.md` —— 壳与 dsh CLI 的契约（C1–C5，upstream 变化时显式升级）
 
 ## 4. 变更记录
+
+- 2026-08-17：**更新互动策略（§0.9）** —— 启动 10s 延迟静默检查更新（发现新版本+验证通过 → 菜单
+  「应用更新」+ 状态行 ⚑，用户确认才切换；离线/失败静默）；state.json 新增 `previous` 字段 + 托盘
+  「回滚到 vX」菜单（current↔previous 交换，自动重启生效）。验证：cargo test 新增 3 例全过
+  （apply_pending 记 previous / rollback 交换 / 无 previous 报错）。
+
+- 2026-08-17：**市场策略改 dsh-market 协作（§0.8）** —— 用户拍板插件市场改用 dsh-market（DSH 可视化
+  插件市场，Settings → Plugin Market，目录来自 awesome-dsh-plugin 注册表）；壳侧：托盘「市场」改
+  「安装/打开插件市场」一键引导，内置/远程清单只保留工作台，spawn 挂 `--patch` come.patch.yml 禁
+  dsh-market detached 重启（allowRestart:false，重启归 supervisor）。验证：`cargo check` 通过 +
+  新增测试（npx_argv patch 注入 / 内置清单仅工作台 / market_installed 无 profile 为 false）。
 
 - 2026-08-16：**方向 v3 定案（只做 dsh-desktop）** + **插件市场远程清单落地** —— `plugins.rs` 的 verified.json 远程清单从「结构预留」变可用：启动后台拉取 `verified-plugins.json`（GitHub raw）→ 缓存 + 与内置清单按 id 合并（覆盖/追加，内置为基底兜底）→ 托盘菜单 `MarketDone` 事件驱动重建；离线/拉取失败静默回退内置清单（不阻塞、不打扰）。命名区分：`verified-plugins.json`（插件清单）与 DESIGN §5 的 `verified.json`（dsh 版本已验证清单，channel A）不同语义，避免共用一个 raw 文件。种子清单 `verified-plugins.json` 已建在仓库根（内容与内置一致，GitHub 尚未提交时拉取 404 走回退）。合并逻辑带 3 个单元测试（覆盖/追加/空远程）；**验证方式**：改动前后 `cargo check` 各通过一次（编译期验证）；合并算法另用独立 rustc 冒烟验证 4 条规则（含顺序）通过。⚠️ 本机环境坑：Git Bash coreutils `link` 遮蔽 MSVC link.exe + VS 18 目录已空 + Git 自带 mingw gcc 缺 cc1 —— 无法链接含 C 依赖（ring/zstd）的测试二进制；且一次错误 linker 尝试污染了 target 的 build script 缓存，后续 `cargo check` 会报 build script 链接失败，**`cargo clean` 后在完整 MSVC 环境重建即可**。
 

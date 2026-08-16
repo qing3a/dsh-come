@@ -189,20 +189,30 @@ fn wait_ready(port: u16, timeout_secs: u64) {
 
 // ---------- 启动 / 停止 / 重启 ----------
 
-/// npx 通道参数（纯函数便于测试）：`--yes @deepseek-ai/dsh@<ver> web --host <host> --port <port>`
+/// npx 通道参数（纯函数便于测试）：
+/// `--yes @deepseek-ai/dsh@<ver> [--patch <path>] web --host <host> --port <port>`
 /// - `--yes`：非交互环境自动确认（首次下载 dsh 包时 npx 会提示，必须显式传）
 /// - `@deepseek-ai/dsh@<ver>`：钉版本号（不追 latest，state.current 即锁定值）
+/// - `--patch <path>`：壳维护的 patch overlay（come.patch.yml，dsh-market 配置等）；
+///   dsh CLI 顶层选项（bin.js `--patch <path>` repeatable），npx 原样透传
 /// - 之后参数全部透传给 dsh CLI → web app（契约 C1）
-pub fn npx_argv(ver: &str, host: &str, port: u16) -> Vec<String> {
-    vec![
+pub fn npx_argv(ver: &str, host: &str, port: u16, patch: Option<&std::path::Path>) -> Vec<String> {
+    let mut argv = vec![
         "--yes".to_string(),
         format!("@deepseek-ai/dsh@{ver}"),
+    ];
+    if let Some(p) = patch {
+        argv.push("--patch".to_string());
+        argv.push(p.display().to_string());
+    }
+    argv.extend([
         "web".to_string(),
         "--host".to_string(),
         host.to_string(),
         "--port".to_string(),
         port.to_string(),
-    ]
+    ]);
+    argv
 }
 
 /// 构造启动命令（契约 C1/C3）：node npx-cli.js <npx_argv>，cwd + DSH_HOME 隔离在启动器 home
@@ -224,11 +234,17 @@ fn build_command(cfg: &AppConfig, ver: &str) -> Result<(Command, PathBuf), Strin
     }
     let mut cmd = Command::new(&node);
     cmd.arg(&npx)
-        .args(npx_argv(ver, &cfg.host, cfg.port))
+        .args(npx_argv(ver, &cfg.host, cfg.port, come_patch_arg().as_deref()))
         .current_dir(&home)
         .env("DSH_HOME", &home);
     hide_window(&mut cmd);
     Ok((cmd, home))
+}
+
+/// 壳 patch overlay 参数：come.patch.yml 存在才传（不存在 = 无 overlay 需求，不传）。
+fn come_patch_arg() -> Option<std::path::PathBuf> {
+    let p = crate::runtime::come_patch_path();
+    p.is_file().then_some(p)
 }
 
 /// 启动 dsh 引擎（已运行则幂等返回）。auto_restart 置 true → 异常退出自动拉起。
@@ -411,7 +427,7 @@ mod tests {
 
     #[test]
     fn npx_argv_pins_version_and_passes_port() {
-        let argv = npx_argv("0.1.0-rc.6", "127.0.0.1", 3080);
+        let argv = npx_argv("0.1.0-rc.6", "127.0.0.1", 3080, None);
         assert_eq!(
             argv,
             vec![
@@ -426,6 +442,17 @@ mod tests {
         );
         // 版本号被钉死（不追 latest），这是「监控渠道」与「盲目 latest」的区别
         assert!(argv.iter().any(|a| a == "@deepseek-ai/dsh@0.1.0-rc.6"));
+    }
+
+    #[test]
+    fn npx_argv_injects_patch_overlay_when_present() {
+        let argv = npx_argv("0.1.0-rc.6", "127.0.0.1", 3080, Some(std::path::Path::new(r"C:\home\come.patch.yml")));
+        assert_eq!(argv[2], "--patch", "壳 patch overlay 应经 --patch 传入（dsh CLI 顶层选项）");
+        assert_eq!(argv[3], r"C:\home\come.patch.yml");
+        assert!(argv.windows(2).any(|w| w == ["web", "--host"]), "--patch 在 web 参数之前");
+        // patch 参数不影响其余契约参数
+        assert!(argv.iter().any(|a| a == "--port"));
+        assert!(argv.iter().any(|a| a == "3080"));
     }
 
     #[test]

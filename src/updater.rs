@@ -77,8 +77,10 @@ fn smoke_test(ver: &str) -> Result<(), String> {
     let npx = runtime::npx_cli_js();
     let home = runtime::home_dir();
     let mut cmd = Command::new(&node);
+    let patch = runtime::come_patch_path();
+    let patch = patch.is_file().then_some(patch);
     cmd.arg(&npx)
-        .args(supervisor::npx_argv(ver, "127.0.0.1", port))
+        .args(supervisor::npx_argv(ver, "127.0.0.1", port, patch.as_deref()))
         .current_dir(&home)
         .env("DSH_HOME", &home);
     supervisor::hide_window(&mut cmd);
@@ -176,16 +178,34 @@ pub fn check_and_install(_cfg: &AppConfig) -> UpdateResult {
 }
 
 /// 应用待确认的更新：把 state.pending 提升为 current（用户从托盘「应用更新」确认后调用）。
-/// 切换后需重启 dsh 引擎生效（托盘「重启引擎」）。
+/// 旧版本记入 state.previous（回滚目标）；切换后需重启 dsh 引擎生效（托盘「重启引擎」）。
 pub fn apply_pending() -> Result<String, String> {
     let mut state = runtime::load_state();
     let ver = state.pending.clone().ok_or_else(|| "没有待应用的更新".to_string())?;
+    state.previous = state.current.clone();
     state.current = Some(ver.clone());
     state.pending = None;
     record(&mut state, &ver, true, "用户确认应用");
     runtime::save_state(&state).map_err(|e| e.to_string())?;
     append_log(&format!("已切换到 v{ver}（重启 dsh 引擎生效）"));
     Ok(ver)
+}
+
+/// 一键回滚到上一版本（托盘「回滚到 vX」）：current ↔ previous 交换（可来回切换），
+/// 由调用方重启引擎生效。返回切到的版本号。
+pub fn rollback() -> Result<String, String> {
+    let mut state = runtime::load_state();
+    let prev = state.previous.clone().ok_or_else(|| "没有可回滚的上一版本".to_string())?;
+    if state.current.as_deref() == Some(prev.as_str()) {
+        return Err("当前已是该版本".to_string());
+    }
+    let cur = state.current.clone();
+    state.current = Some(prev.clone());
+    state.previous = cur;
+    record(&mut state, &prev, true, "用户回滚");
+    runtime::save_state(&state).map_err(|e| e.to_string())?;
+    append_log(&format!("已回滚到 v{prev}（重启 dsh 引擎生效）"));
+    Ok(prev)
 }
 
 fn record(state: &mut runtime::State, ver: &str, ok: bool, detail: &str) {
@@ -228,5 +248,46 @@ pub fn bootstrap(cfg: &AppConfig) -> bool {
             append_log(&format!("启动失败: {e}"));
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 更新-回滚闭环（持 DSH_HOME_TEST_LOCK 与 tray 的窗口几何测试串行，
+    /// 避免并行测试踩踏进程级 DSH_DESKTOP_HOME）：
+    /// 应用更新记 previous → 回滚交换 current/previous → 无 previous 时报错
+    #[test]
+    fn update_flow_apply_and_rollback_isolated() {
+        let _guard = runtime::DSH_HOME_TEST_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("dsh-update-flow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var("DSH_DESKTOP_HOME", &tmp);
+
+        // 场景 1：应用更新 → 旧版本记为回滚目标
+        let mut st = runtime::State::default();
+        st.current = Some("1.0".to_string());
+        st.pending = Some("2.0".to_string());
+        runtime::save_state(&st).unwrap();
+        assert_eq!(apply_pending().unwrap(), "2.0");
+        let after = runtime::load_state();
+        assert_eq!(after.current.as_deref(), Some("2.0"));
+        assert_eq!(after.previous.as_deref(), Some("1.0"), "旧版本应记为回滚目标");
+        assert!(after.pending.is_none());
+
+        // 场景 2：回滚 → current/previous 交换（可再切回）
+        assert_eq!(rollback().unwrap(), "1.0");
+        let after = runtime::load_state();
+        assert_eq!(after.current.as_deref(), Some("1.0"));
+        assert_eq!(after.previous.as_deref(), Some("2.0"), "交换后仍可切回");
+
+        // 场景 3：无上一版本 → 明确报错（不静默）
+        let _ = std::fs::remove_file(runtime::state_path());
+        runtime::save_state(&runtime::State::default()).unwrap();
+        assert!(rollback().is_err(), "无上一版本时回滚应报错");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::remove_var("DSH_DESKTOP_HOME");
     }
 }

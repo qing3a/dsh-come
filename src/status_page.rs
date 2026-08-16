@@ -73,10 +73,12 @@ pub(crate) fn status_json() -> String {
         },
         "version": {
             "current": state.current,
+            "previous": state.previous,
             "pending": state.pending,
             "known_bad": state.known_bad,
         },
         "plugins": installed,
+        "market_installed": crate::plugins::market_installed(),
         "workbenches": workbenches,
         "dirs": {
             "root": runtime::root_dir().display().to_string(),
