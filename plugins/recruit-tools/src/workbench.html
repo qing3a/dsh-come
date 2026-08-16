@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>猎头工作台 · dsh-recruit-tools</title>
+<style>
+:root {
+  --bg: #f5f6f8; --surface: #ffffff; --border: #e3e6eb; --text: #1f2430; --muted: #6b7280;
+  --accent: #2563eb; --accent-soft: #eff6ff; --ok: #16a34a; --warn: #d97706; --danger: #dc2626;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171d; --surface: #1c2129; --border: #2b323d; --text: #e8eaf0; --muted: #9aa3b2; --accent-soft: #1e2a44; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; padding: 20px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+h1 { font-size: 20px; font-weight: 700; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px; font-size: 12px; color: var(--muted); }
+.chip b { color: var(--text); }
+.muted { color: var(--muted); font-size: 12px; }
+nav { display: flex; gap: 6px; margin-bottom: 14px; }
+nav button { border: 1px solid var(--border); background: var(--surface); color: var(--muted); padding: 7px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+nav button.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+section { display: none; }
+section.active { display: block; }
+.grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.card h3 { font-size: 15px; margin-bottom: 12px; }
+.form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 4px; flex: 1; min-width: 130px; }
+label.check { flex-direction: row; align-items: center; gap: 6px; margin-top: 18px; }
+input, select, textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); font-size: 14px; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+button.prim { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 9px 18px; cursor: pointer; font-size: 14px; }
+button.ghost { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; background: var(--accent-soft); color: var(--accent); }
+.badge.terminal-ok { background: #dcfce7; color: var(--ok); }
+.badge.terminal-reject { background: #fee2e2; color: var(--danger); }
+.badge.terminal-withdraw { background: #e5e7eb; color: var(--muted); }
+.board { display: grid; grid-template-columns: repeat(7, minmax(150px, 1fr)); gap: 10px; overflow-x: auto; }
+.column { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px; min-height: 120px; }
+.column h4 { font-size: 13px; text-align: center; margin-bottom: 8px; color: var(--text); }
+.column h4 span { display: block; font-size: 11px; color: var(--muted); }
+.referral { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 12px; }
+.referral .who { font-weight: 600; }
+.referral .where { color: var(--muted); }
+.referral .note { color: var(--muted); font-size: 11px; margin-top: 4px; word-break: break-all; }
+.referral .acts { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.referral .acts button { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+.referral .acts button.next { color: var(--accent); border-color: var(--accent); }
+.referral .acts button.reject { color: var(--danger); border-color: var(--danger); }
+.empty { color: var(--muted); text-align: center; padding: 24px 0; font-size: 13px; }
+#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 8px; font-size: 13px; display: none; z-index: 99; max-width: 80vw; }
+#toast.err { background: var(--danger); color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🕵️ 猎头工作台</h1>
+  <div class="chips" id="statusChips"></div>
+  <span class="muted" id="dataDir"></span>
+</header>
+<nav>
+  <button data-tab="candidates" class="active">候选人</button>
+  <button data-tab="positions">职位</button>
+  <button data-tab="referrals">推荐流水线</button>
+</nav>
+
+<section id="tab-candidates" class="active">
+  <div class="grid">
+    <div class="card">
+      <h3>＋ 登记候选人</h3>
+      <div class="form-row">
+        <label>姓名 *<input id="c-name" placeholder="候选人姓名"></label>
+        <label>当前职位<input id="c-title" placeholder="如：后端工程师"></label>
+      </div>
+      <div class="form-row">
+        <label>当前公司<input id="c-company" placeholder="如：星辰科技"></label>
+        <label>阶段<select id="c-stage">
+          <option value="sourcing">寻访中</option><option value="contacted">已联系</option>
+          <option value="interviewing">面试中</option><option value="offered">已发Offer</option>
+          <option value="placed">已入职</option><option value="archived">已归档</option>
+        </select></label>
+      </div>
+      <div class="form-row"><label>备注（仅记必要事实）<textarea id="c-notes" rows="2"></textarea></label></div>
+      <div class="form-row"><label class="check"><input type="checkbox" id="c-confidential" checked> 含保密信息</label></div>
+      <button class="prim" onclick="saveCandidate()">保存候选人</button>
+    </div>
+    <div class="card">
+      <h3>候选人台账 <span class="muted" id="c-count"></span></h3>
+      <div id="c-list"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-positions">
+  <div class="grid">
+    <div class="card">
+      <h3>＋ 登记职位需求</h3>
+      <div class="form-row">
+        <label>客户公司 *<input id="p-client" placeholder="如：星辰科技"></label>
+        <label>职位名称 *<input id="p-title" placeholder="如：后端工程师"></label>
+      </div>
+      <div class="form-row"><label>职位要求<textarea id="p-req" rows="2" placeholder="如：Go/分布式"></textarea></label></div>
+      <div class="form-row"><label>薪资区间（保密）<input id="p-salary" placeholder="如：40-60K×15"></label></div>
+      <div class="form-row"><label class="check"><input type="checkbox" id="p-confidential" checked> 含保密信息</label></div>
+      <button class="prim" onclick="savePosition()">保存职位</button>
+    </div>
+    <div class="card">
+      <h3>职位列表 <span class="muted" id="p-count"></span></h3>
+      <div id="p-list"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-referrals">
+  <div class="card" style="margin-bottom:16px">
+    <h3>＋ 发起推荐（本地 7 态流程）</h3>
+    <div class="form-row">
+      <label>候选人<select id="r-cand"></select></label>
+      <label>职位<select id="r-pos"></select></label>
+      <label>初始阶段<select id="r-stage">
+        <option>已推荐</option><option>待客户反馈</option><option>面试中</option><option>已发Offer</option><option>已入职</option>
+      </select></label>
+    </div>
+    <div class="form-row"><label>推荐说明<textarea id="r-note" rows="2"></textarea></label></div>
+    <button class="prim" onclick="saveReferral()">发起推荐</button>
+  </div>
+  <div class="board" id="r-board"></div>
+</section>
+
+<div id="toast"></div>
+<script>
+const STAGES = ['已推荐','待客户反馈','面试中','已发Offer','已入职','拒绝','撤回'];
+const NEXT = { '已推荐':'待客户反馈','待客户反馈':'面试中','面试中':'已发Offer','已发Offer':'已入职' };
+const TERMINAL = new Set(['已入职','拒绝','撤回']);
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, isErr) { const t = $('toast'); t.textContent = msg; t.className = isErr ? 'err' : ''; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3000); }
+async function api(path, opts) {
+  const res = await fetch('/recruit/api' + path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+const post = (path, body) => api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+async function refreshAll() {
+  try {
+    const [st, cands, poss, refs] = await Promise.all([
+      api('/'), api('/candidates'), api('/positions'), api('/referrals'),
+    ]);
+    $('dataDir').textContent = '本地数据：' + st.dataDir;
+    $('statusChips').innerHTML =
+      '<span class="chip">候选人 <b>' + st.candidateCount + '</b></span>' +
+      '<span class="chip">职位 <b>' + st.positionCount + '</b></span>' +
+      '<span class="chip">推荐 <b>' + st.referralCount + '</b></span>' +
+      (st.referralByStage || []).map(x => '<span class="chip">' + x.stage + ' <b>' + x.count + '</b></span>').join('');
+    renderCandidates(cands.candidates);
+    renderPositions(poss.positions);
+    renderReferrals(refs.referrals, cands.candidates, poss.positions);
+    fillReferralSelects(cands.candidates, poss.positions);
+  } catch (e) { toast(e.message, true); }
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+const CAND_LABEL = { sourcing:'寻访中', contacted:'已联系', interviewing:'面试中', offered:'已发Offer', placed:'已入职', archived:'已归档' };
+const badgeCls = (s) => s === '已入职' ? 'terminal-ok' : s === '拒绝' ? 'terminal-reject' : s === '撤回' ? 'terminal-withdraw' : '';
+
+function renderCandidates(list) {
+  $('c-count').textContent = '共 ' + list.length + ' 名';
+  $('c-list').innerHTML = list.length === 0 ? '<div class="empty">暂无候选人 —— 在左侧登记，或直接对 AI 说「登记候选人」</div>' :
+    '<table><tr><th>姓名</th><th>职位</th><th>公司</th><th>阶段</th><th>保密</th></tr>' +
+    list.map(c => '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.title || '—') + '</td><td>' + esc(c.company || '—') + '</td>' +
+      '<td><span class="badge">' + esc(CAND_LABEL[c.stage] || c.stage) + '</span></td>' +
+      '<td>' + (c.confidential ? '🔒' : '') + '</td></tr>').join('') + '</table>';
+}
+function renderPositions(list) {
+  $('p-count').textContent = '共 ' + list.length + ' 个';
+  $('p-list').innerHTML = list.length === 0 ? '<div class="empty">暂无职位需求 —— 在左侧登记，或对 AI 说「登记职位」</div>' :
+    '<table><tr><th>客户</th><th>职位</th><th>要求</th><th>保密</th></tr>' +
+    list.map(p => '<tr><td>' + esc(p.client) + '</td><td>' + esc(p.title) + '</td><td>' + esc(p.requirements || '—') + '</td>' +
+      '<td>' + (p.confidential ? '🔒' : '') + '</td></tr>').join('') + '</table>';
+}
+function renderReferrals(refs) {
+  $('r-board').innerHTML = STAGES.map(s => {
+    const items = refs.filter(r => r.stage === s);
+    return '<div class="column"><h4>' + esc(s) + '<span>' + items.length + '</span></h4>' +
+      items.map(r => {
+        const next = NEXT[r.stage];
+        const acts = [];
+        if (next) acts.push('<button class="next" onclick="advance('' + r.id + '','' + next + '')">→ ' + esc(next) + '</button>');
+        if (!TERMINAL.has(r.stage)) {
+          acts.push('<button class="reject" onclick="endRec('' + r.id + '','拒绝')">拒绝</button>');
+          acts.push('<button class="ghost" style="font-size:11px;padding:2px 8px" onclick="endRec('' + r.id + '','撤回')">撤回</button>');
+        }
+        return '<div class="referral"><div class="who">' + esc(r.candidateName) + '</div>' +
+          '<div class="where">' + esc(r.client ? r.client + '｜' : '') + esc(r.positionTitle) + '</div>' +
+          (r.note ? '<div class="note">' + esc(r.note) + '</div>' : '') +
+          '<div class="acts">' + acts.join('') + '</div></div>';
+      }).join('') || '<div class="empty">—</div>' + '</div>';
+  }).join('');
+}
+function fillReferralSelects(cands, poss) {
+  $('r-cand').innerHTML = cands.map(c => '<option value="' + c.id + '">' + esc(c.name) + (c.title ? ' · ' + esc(c.title) : '') + '</option>').join('') || '<option value="">（先登记候选人）</option>';
+  $('r-pos').innerHTML = poss.map(p => '<option value="' + p.id + '">' + esc(p.client) + ' · ' + esc(p.title) + '</option>').join('') || '<option value="">（先登记职位）</option>';
+}
+
+async function saveCandidate() {
+  try {
+    const body = { name: $('c-name').value, title: $('c-title').value, company: $('c-company').value, stage: $('c-stage').value, notes: $('c-notes').value, confidential: $('c-confidential').checked };
+    await post('/candidates', body);
+    ['c-name','c-title','c-company','c-notes'].forEach(id => $(id).value = '');
+    toast('候选人已保存'); await refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+async function savePosition() {
+  try {
+    const body = { client: $('p-client').value, title: $('p-title').value, requirements: $('p-req').value, salaryRange: $('p-salary').value, confidential: $('p-confidential').checked };
+    await post('/positions', body);
+    ['p-client','p-title','p-req','p-salary'].forEach(id => $(id).value = '');
+    toast('职位已保存'); await refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+async function saveReferral() {
+  try {
+    const body = { candidateId: $('r-cand').value, positionId: $('r-pos').value, stage: $('r-stage').value, note: $('r-note').value };
+    if (!body.candidateId || !body.positionId) throw new Error('请先选择候选人与职位');
+    await post('/referrals', body);
+    $('r-note').value = ''; toast('推荐已发起'); await refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+async function advance(id, stage) {
+  try { await post('/referrals/' + id + '/stage', { stage }); toast('已推进到 ' + stage); await refreshAll(); }
+  catch (e) { toast(e.message, true); }
+}
+async function endRec(id, stage) {
+  if (!confirm('确认将此推荐标记为「' + stage + '」？')) return;
+  try { await post('/referrals/' + id + '/stage', { stage }); toast('已标记：' + stage); await refreshAll(); }
+  catch (e) { toast(e.message, true); }
+}
+
+document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('section').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  $('tab-' + b.dataset.tab).classList.add('active');
+}));
+refreshAll();
+</script>
+</body>
+</html>

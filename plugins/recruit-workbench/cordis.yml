@@ -1,0 +1,12 @@
+# 开发 overlay：本地加载 recruit-workbench 插件（dsh web --patch 本文件）
+# Windows 踩坑：name 必须用 file:/// URL 形式（裸 C:/... 会被 ESM loader 当成协议 'c:'）
+# 加载方式：
+#   dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench/cordis.yml
+# 说明：本 overlay 只加载 HOST 半（工具 + API 路由）；浏览器工作台 UI 需要把包
+#   安装进 profile（dsh plugin --profile web add <本目录>）并在 cordis.patch.yml 加行，
+#   因为 clientModules 只扫描 node_modules 里可解析的包（见 README「安装」节）。
+- insert:
+    - id: recruit-workbench
+      name: 'file:///C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench/src/index.ts'
+      # config:
+      #   dataDir: '~/recruit-workbench-data'
