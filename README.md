@@ -4,11 +4,13 @@
 
 > **面向谁**：想本地跑 DeepSeek agent，但被「装 Node + 敲命令行」劝退的人。开发者直接用官方 `npx @deepseek-ai/dsh web` 即可，本项目的价值在降低入门门槛。
 
+> 🚀 **方向 v3（2026-08-16）**：只做 dsh-desktop，md-agent 的功能以 **dsh 官方插件形态**移植进本生态（猎头工作台 = `plugins/recruit-workbench` + `recruit-tools`）；Rust 壳专注托盘/守护/更新/市场。决策记忆见 `docs/memory.md`，插件模式速查见 `docs/dsh-plugin-guide.md`，市场收录见 `docs/market.md`。
+
 ## 三个卖点
 
 - **双击即用**：下载即得，无需 Node/终端；首次运行自动下载 Node、安装 DSH、打开界面
 - **更新稳妥**：DSH 目前迭代较快、兼容性会变——新版本先**冒烟验证**（临时端口 HTTP 200）再锁定切换，失败自动保留旧版，不影响使用
-- **插件市场**：只推荐运行时验证 ✅ 的插件（`dsh-plugin-verify` 产出），一键安装，不碰终端
+- **工作台市场**：**工作台优先**（场景完整的业务包，如猎头协作，点开即用）+ 单件工具（运行时验证 ✅，一键装/卸），不碰终端
 
 ## 快速开始
 
@@ -29,7 +31,7 @@ dsh-desktop.exe（Rust 单 exe，进程外 supervisor）
 ├── 自举安装   portable Node（官方源 + npmmirror 镜像兜底，纯 Rust 解压）
 ├── 引擎守护   spawn dsh web；崩溃自动重启（指数退避 + 健康期重置上限）；滚动日志
 ├── 版本管理   registry 检查 → 冒烟验证（临时端口 HTTP 200）→ 切换/回滚（known_bad）
-├── 插件市场   内置 ✓已验证 清单 + 一键装/卸（dsh plugin 契约）
+├── 市场      工作台优先（场景分组 + 打开入口）+ 单件工具装/卸；内置兜底 + 远程清单合并
 └── 托盘      官方 logo（浅/深色主题自适应）/ 自动开界面 / 开机自启（HKCU Run）
 ```
 
@@ -52,5 +54,5 @@ MIT。托盘图标使用 DeepSeek Harness 官方 favicon（`apps/web/public/favi
 
 ## Roadmap
 
-- ✅ v1（当前）：自举安装 / 引擎守护 / 验证式更新 / 插件市场 / 托盘（主题感知图标）/ `--app` 独立窗口 / 开机自启
-- 🔜 v2：verified.json 远程插件清单、全 waterfall 冒烟（收编 `dsh-plugin-verify` 引擎）、首次向导、launcher 自更新、壳管理页（版本/插件/日志可视化）
+- ✅ v1（当前）：自举安装 / 引擎守护 / 验证式更新 / 市场（工作台优先）/ 托盘（主题感知图标）/ `--app` 独立窗口 / 开机自启 / 首次向导 / 壳管理页
+- 🔜 v2：全 waterfall 冒烟（收编 `dsh-plugin-verify` 引擎）、launcher 自更新、远程清单由验证引擎增量产出、公网市场浏览页（第二个工作台上架后）

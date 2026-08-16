@@ -2,3 +2,11 @@
 dist/
 *.exe
 *.log
+# 本地开发：插件解析 dsh 依赖的 junction（勿提交）
+node_modules/
+# 外部 clone（dsh-tray，独立仓库管理，勿提交）
+/plugins/dsh-tray/
+# md-agent 参考资产（kb 知识库 + 运行时数据，dsh-desktop 不拥有）
+/kb/
+# 会话工具目录（zcode plans 快照，勿提交）
+.zcode/
