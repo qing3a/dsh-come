@@ -97,6 +97,32 @@ pub fn log(line: &str) {
     append_log(line);
 }
 
+// ---------- 瞬时提示（flash） ----------
+
+/// 瞬时提示：托盘状态行短暂显示操作结果（插件装/卸、更新检查等），过期自动消失。
+/// 独立于 stage——stage 是安装进度（长生命周期），flash 是一次性结果（12s 过期）。
+static FLASH: OnceLock<Mutex<Option<(String, std::time::Instant)>>> = OnceLock::new();
+
+/// 设置瞬时提示文案（覆盖旧提示；12s 后 status_line 不再显示）
+pub fn set_flash(msg: &str) {
+    let m = FLASH.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = m.lock() {
+        *g = Some((msg.to_string(), std::time::Instant::now()));
+    }
+}
+
+/// 未过期的 flash 文案；过期或从未设置 → None
+pub fn flash() -> Option<String> {
+    let m = FLASH.get()?;
+    let g = m.lock().ok()?;
+    let (msg, at) = g.as_ref()?;
+    if at.elapsed() > Duration::from_secs(12) {
+        None
+    } else {
+        Some(msg.clone())
+    }
+}
+
 /// 子进程不弹控制台黑窗口（Windows）：spawn 的 node/taskkill 默认会创建控制台窗口，
 /// 用户实测「经常弹出 nodejs 黑色窗口」即此因。stdout 重定向 ≠ 无窗口，
 /// 必须显式 CREATE_NO_WINDOW。所有 spawn 点（引擎/taskkill/冒烟/插件）统一调用。

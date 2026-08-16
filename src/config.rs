@@ -18,6 +18,13 @@ pub struct AppConfig {
     /// 启动后等待 HTTP 200 的最长秒数（就绪探测）。
     /// 首次运行 npx 要完整下载 dsh 依赖树（含 koffi 等原生包），60s 偏紧 → 默认 240s
     pub startup_timeout_secs: u64,
+    /// 用户最后使用的浏览器窗口位置（DIP，screenX/screenY）——启动 --app 窗口时恢复。
+    /// None = 未记录过，交给浏览器默认位置
+    #[serde(default)]
+    pub window_pos: Option<(i32, i32)>,
+    /// 用户最后使用的浏览器窗口大小（DIP，width/height）。None = 浏览器默认大小
+    #[serde(default)]
+    pub window_size: Option<(i32, i32)>,
 }
 
 impl Default for AppConfig {
@@ -28,6 +35,8 @@ impl Default for AppConfig {
             max_restarts: 5,
             backoff_max_secs: 30,
             startup_timeout_secs: 240,
+            window_pos: None,
+            window_size: None,
         }
     }
 }
