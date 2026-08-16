@@ -189,7 +189,7 @@ fn fetch_remote_marketplace() -> Result<Vec<PluginInfo>, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
-        .get("https://raw.githubusercontent.com/qing3a/dsh-desktop/main/verified-plugins.json")
+        .get("https://raw.githubusercontent.com/qing3a/dsh-companion/main/verified-plugins.json")
         .send()
         .map_err(|e| format!("拉取 verified-plugins.json 失败: {e}"))?;
     if !resp.status().is_success() {

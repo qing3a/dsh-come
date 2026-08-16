@@ -50,7 +50,7 @@ dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-tools
 
 ## 本地开发解析（重要）
 
-插件文件在 dsh-desktop 仓库内，而 `@deepseek-ai/*` 依赖装在 dsh 的 node_modules 里。
+插件文件在 dsh-companion 仓库内，而 `@deepseek-ai/*` 依赖装在 dsh 的 node_modules 里。
 开发时需让插件能解析到**同一份**依赖实例（避免 Cordis 双实例）：
 
 ```powershell

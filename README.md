@@ -1,10 +1,10 @@
-# dsh-desktop｜DSH 伴侣
+# dsh-companion｜DSH 伴侣
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**双击即用的 Windows 桌面 App**——无需安装 Node、无需打开终端，首次运行自动完成一切。
 
 > **面向谁**：想本地跑 DeepSeek agent，但被「装 Node + 敲命令行」劝退的人。开发者直接用官方 `npx @deepseek-ai/dsh web` 即可，本项目的价值在降低入门门槛。
 
-> 🚀 **方向 v3（2026-08-16）**：只做 dsh-desktop，md-agent 的功能以 **dsh 官方插件形态**移植进本生态（猎头工作台 = `plugins/recruit-workbench` + `recruit-tools`）；Rust 壳专注托盘/守护/更新/市场。决策记忆见 `docs/memory.md`，插件模式速查见 `docs/dsh-plugin-guide.md`，市场收录见 `docs/market.md`。
+> 🚀 **方向 v3（2026-08-16）**：只做 dsh-companion，md-agent 的功能以 **dsh 官方插件形态**移植进本生态（猎头工作台 = `plugins/recruit-workbench` + `recruit-tools`）；Rust 壳专注托盘/守护/更新/市场。决策记忆见 `docs/memory.md`，插件模式速查见 `docs/dsh-plugin-guide.md`，市场收录见 `docs/market.md`。
 
 ## 三个卖点
 
@@ -15,8 +15,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/qing3a/dsh-desktop
-cd dsh-desktop
+git clone https://github.com/qing3a/dsh-companion
+cd dsh-companion
 cargo run --release
 ```
 
@@ -27,7 +27,7 @@ cargo run --release
 ## 它做什么
 
 ```
-dsh-desktop.exe（Rust 单 exe，进程外 supervisor）
+dsh-companion.exe（Rust 单 exe，进程外 supervisor）
 ├── 自举安装   portable Node（官方源 + npmmirror 镜像兜底，纯 Rust 解压）
 ├── 引擎守护   spawn dsh web；崩溃自动重启（指数退避 + 健康期重置上限）；滚动日志
 ├── 版本管理   registry 检查 → 冒烟验证（临时端口 HTTP 200）→ 切换/回滚（known_bad）
@@ -46,7 +46,7 @@ dsh-desktop.exe（Rust 单 exe，进程外 supervisor）
 
 ## 与 dsh-tray 的关系
 
-[`dsh-tray`](https://github.com/qing3a/dsh-tray) 是 DSH **进程内**插件（托盘/气泡通知，随 DSH 生灭）；本项目的 **进程外** 壳（守护 DSH 进程）。两者互补不冗余：同一用户装了两边时，dsh-tray 检测到 dsh-desktop 会自动降级。
+[`dsh-tray`](https://github.com/qing3a/dsh-tray) 是 DSH **进程内**插件（托盘/气泡通知，随 DSH 生灭）；本项目的 **进程外** 壳（守护 DSH 进程）。两者互补不冗余：同一用户装了两边时，dsh-tray 检测到 dsh-companion 会自动降级。
 
 ## 许可
 

@@ -40,7 +40,7 @@
 ## 4. 上架流程
 
 1. 商品项目完成验证（e2e 等），产出一条 `PluginInfo`。
-2. **两处同步登记**（改 dsh-desktop 仓库）：
+2. **两处同步登记**（改 dsh-companion 仓库）：
    - `verified-plugins.json`（远程清单，GitHub raw，壳启动后拉取合并）
    - `src/plugins.rs::builtin_marketplace()`（内置兜底清单，离线可用）
 3. 壳编译发版后：托盘「市场」出现工作台分组，条目 [打开] 直接进入口；
@@ -55,4 +55,4 @@
 | `md-hr` | 猎头协作 | 猎头协作 | 本地资产（Desktop/md-hr）+ md-api MCP | `file:///.../md-hr/index.html` |
 
 md-hr 是外部商品（`Desktop/md-hr`），其代码、构建、dsh 插件化升级均由该项目的用户负责；
-dsh-desktop 只在本仓库清单里收录它的入口与验证信息。
+dsh-companion 只在本仓库清单里收录它的入口与验证信息。
