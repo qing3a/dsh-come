@@ -31,7 +31,7 @@ md-agent 的 headhunter 模板：候选人 / 职位 / 推荐流水线，本地�
 
 ```powershell
 # 开发加载（本机验证过；dsh 来自 npx 缓存，--patch 后接本文件绝对路径）
-dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-tools/cordis.yml --host 127.0.0.1 --port 3188
+dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-tools/cordis.yml --host 127.0.0.1 --port 3188
 ```
 
 启动日志出现 `[recruit-tools] plugin loaded!` 即加载成功；之后在 Web UI 问

@@ -186,7 +186,7 @@ export function apply(ctx: Context) {
 ```powershell
 # 冒烟验证过的加载命令（隔离 home 起在临时端口；生产用壳的 npx 通道 + --patch）
 $env:DSH_HOME = '<临时隔离目录>\home'
-dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-tools/cordis.yml --host 127.0.0.1 --port 3199
+dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-tools/cordis.yml --host 127.0.0.1 --port 3199
 ```
 
 启动日志出现 `[recruit-tools] plugin loaded!` 且 `http://127.0.0.1:<port>/` 返回 200 即成功。
@@ -237,7 +237,7 @@ plugins/recruit-workbench/
 ### 安装流程（client 半必须走这里）
 
 ```powershell
-dsh plugin --profile web add C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench
+dsh plugin --profile web add C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-workbench
 # cordis.patch.yml 加行：name: 'recruit-workbench'（包名，供 clientModules 发现 dsh.client）
 ```
 

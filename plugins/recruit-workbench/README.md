@@ -36,7 +36,7 @@ clientModules 只扫描 profile node_modules 里可解析的包，因此工作�
 
 ```powershell
 # 1. 安装插件包（symlink 到仓库目录，改代码即时生效）
-dsh plugin --profile web add C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench
+dsh plugin --profile web add C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-workbench
 
 # 2. 在 profile 补丁加行（已加好）：
 #    C:\Users\Administrator\.dsh\profiles\web\cordis.patch.yml
@@ -52,11 +52,11 @@ dsh plugin --profile web add C:/Users/Administrator/Desktop/dsh-desktop/plugins/
 
 ```powershell
 # host 半快速验证：--dump-config 组合正确
-dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench/cordis.yml --dump-config
+dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-workbench/cordis.yml --dump-config
 
 # 隔离 DSH_HOME + 临时端口真实加载（host 工具 + API 路由）
 $env:DSH_HOME = '<临时目录>\home'
-dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-workbench/cordis.yml --host 127.0.0.1 --port 3199
+dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-workbench/cordis.yml --host 127.0.0.1 --port 3199
 ```
 
 启动日志出现 `[recruit-workbench] plugin loaded!` 即成功；之后可验证：

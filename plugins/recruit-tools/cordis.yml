@@ -2,10 +2,10 @@
 # 注意（Windows 踩坑）：name 必须用 file:/// URL 形式——
 #   裸路径 C:/... 会被 ESM loader 当成协议 'c:' 而报 ERR_UNSUPPORTED_ESM_URL_SCHEME。
 # 加载方式：
-#   dsh web --patch C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-tools/cordis.yml
+#   dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-tools/cordis.yml
 # 插件配置（可选）：dataDir 覆盖默认的 $DSH_HOME/recruit
 - insert:
     - id: recruit-tools
-      name: 'file:///C:/Users/Administrator/Desktop/dsh-desktop/plugins/recruit-tools/src/index.ts'
+      name: 'file:///C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-tools/src/index.ts'
       # config:
       #   dataDir: '~/recruit-data'

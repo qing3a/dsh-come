@@ -5,6 +5,20 @@
 
 状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **定名 dsh-come（2026-08-16）**：dsh-desktop → dsh-companion → dsh-come 两次更名，均在公开引用前完成；运行时数据路径不变（见 §0.6）。
 
+## 0.7 工作区文件夹改名 dsh-come（2026-08-17，改名前操作）
+
+**操作**：关闭本会话后，把项目文件夹 `C:\Users\Administrator\Desktop\dsh-desktop` 重命名为 `C:\Users\Administrator\Desktop\dsh-come`，然后重新用本软件打开新文件夹（新工作区）继续。
+
+**改名前已完成（快照）**：
+- 代码/清单/文档已全部定名 dsh-come（仓库 `qing3a/dsh-come`、二进制 `dsh-come.exe`、自启项 "DSH Come"、远程清单 `raw.githubusercontent.com/qing3a/dsh-come/master/verified-plugins.json`）；git 历史在（`.git` 随文件夹移动不丢）。
+- 文档/插件里硬编码的旧文件夹路径已全部替换为 `Desktop/dsh-come`（`plugins/*/cordis.yml` 的 `file://` 引用、README/dsh-plugin-guide 命令示例等）——改后无需再改。
+- npm 占位 `dsh-come@0.0.1` 已发布（2026-08-17，见下方发布踩坑）。
+
+**改后接续要点（新会话先读）**：
+- 本文件（`docs/memory.md`）是项目记忆中枢：方向 v3（§0）、定名链（§0.6/§0.5）、本改名前置（§0.7）都在此。
+- 项目现在在 `C:\Users\Administrator\Desktop\dsh-come`；git remote 仍是 `qing3a/dsh-come`（已同步）。用旧路径打开会失败，用新路径即可。
+- **npm 发布踩坑（2026-08-17 实测）**：npm CLI 不读 `NODE_AUTH_TOKEN` 环境变量（那是 CI 约定）——用环境变量发布实际走 `~/.npmrc` 旧 token，永远 403。必须**命令行内联**：`npm --//registry.npmjs.org/:_authToken=<granular token> publish`；token 需在 npmjs.com 生成 granular access token（Packages 读写，scope 选 All packages）。
+
 ## 0.6 定名 dsh-come（2026-08-16，当日第二次更名）
 
 - **链路**：`dsh-desktop`（初始）→ 同日发现 GitHub 三方撞车（dataelement / SnowCrescenter-tech 同名，npm 名亦被占）→ 更名 `dsh-companion`（与中文「伴侣」对应）→ 用户拍板定名 `dsh-come`。
