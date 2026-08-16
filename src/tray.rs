@@ -24,6 +24,8 @@ enum UserEvent {
     UpdateDone,
     /// 插件安装/卸载完成（重建菜单反映新状态）
     PluginDone,
+    /// 远程市场清单（verified.json）拉取完成（重建菜单展示新条目）
+    MarketDone,
 }
 
 struct TrayIds {
@@ -33,6 +35,7 @@ struct TrayIds {
     apply: MenuId,
     restart: MenuId,
     autostart: MenuId,
+    status: MenuId,
     logs: MenuId,
     quit: MenuId,
 }
@@ -81,6 +84,9 @@ impl ApplicationHandler<UserEvent> for App {
                     open_system_browser(&self.url); // 强制系统浏览器（DevTools/多标签）
                 } else if ev.id == self.ids.logs {
                     open_dir(&runtime::logs_dir());
+                } else if ev.id == self.ids.status {
+                    // 壳管理页：独立窗口打开（跟随向导页的浏览器窗口方案）
+                    crate::status_page::open();
                 } else if ev.id == self.ids.update {
                     // 后台线程检查更新（可能联网下载耗时）；完成后回传事件重建菜单。
                     // 结果不自动切换：验证通过只存 pending，菜单出现「应用更新」由用户确认。
@@ -94,6 +100,7 @@ impl ApplicationHandler<UserEvent> for App {
                             updater::UpdateResult::Failed(e) => format!("更新失败: {e}"),
                         };
                         supervisor::log(&msg);
+                        supervisor::set_flash(&msg);
                         let _ = proxy.send_event(UserEvent::UpdateDone);
                     });
                 } else if ev.id == self.ids.apply {
@@ -103,13 +110,17 @@ impl ApplicationHandler<UserEvent> for App {
                         match updater::apply_pending() {
                             Ok(ver) => {
                                 supervisor::log(&format!("应用更新 v{ver}，正在重启引擎…"));
+                                supervisor::set_flash(&format!("应用更新 v{ver}，正在重启引擎…"));
                                 let cfg = config::load();
                                 match supervisor::restart(&cfg, &ver) {
                                     Ok(()) => supervisor::log("引擎已用新版本重启"),
                                     Err(e) => supervisor::log(&format!("引擎重启失败（重启后生效）: {e}")),
                                 }
                             }
-                            Err(e) => supervisor::log(&format!("应用更新失败: {e}")),
+                            Err(e) => {
+                                supervisor::log(&format!("应用更新失败: {e}"));
+                                supervisor::set_flash(&format!("应用更新失败: {e}"));
+                            }
                         }
                         let _ = proxy.send_event(UserEvent::UpdateDone);
                     });
@@ -124,8 +135,14 @@ impl ApplicationHandler<UserEvent> for App {
                         std::thread::spawn(move || {
                             let r = supervisor::restart(&cfg, &ver);
                             match r {
-                                Ok(()) => supervisor::log("引擎已重启"),
-                                Err(e) => supervisor::log(&format!("引擎重启失败: {e}")),
+                                Ok(()) => {
+                                    supervisor::log("引擎已重启");
+                                    supervisor::set_flash("引擎已重启");
+                                }
+                                Err(e) => {
+                                    supervisor::log(&format!("引擎重启失败: {e}"));
+                                    supervisor::set_flash(&format!("引擎重启失败: {e}"));
+                                }
                             }
                             let _ = proxy.send_event(UserEvent::UpdateDone);
                         });
@@ -139,18 +156,45 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     self.rebuild();
                 } else if ev.id.0.starts_with("plugin:install:") {
-                    let id = ev.id.0.trim_start_matches("plugin:install:").to_string();
+                    let id = plugin_id_from_menu(&ev.id.0, "plugin:install:");
                     self.run_plugin_op(&id, true);
                 } else if ev.id.0.starts_with("plugin:uninstall:") {
-                    let id = ev.id.0.trim_start_matches("plugin:uninstall:").to_string();
+                    let id = plugin_id_from_menu(&ev.id.0, "plugin:uninstall:");
                     self.run_plugin_op(&id, false);
+                } else if ev.id.0.starts_with("workbench:open:") {
+                    // 工作台「打开」：取 entry 与依赖服务，浏览器/独立窗口打开；
+                    // requires 非空时先提示依赖需用户自启（壳不代启动外部服务）
+                    let id = plugin_id_from_menu(&ev.id.0, "workbench:open:");
+                    match plugins::workbench_open(&id) {
+                        Some((url, requires)) => {
+                            if !requires.is_empty() {
+                                supervisor::set_flash(&format!("工作台依赖（请先启动）：{}", requires.join("、")));
+                            }
+                            open_browser(&url);
+                        }
+                        None => {
+                            supervisor::log(&format!("工作台 {id} 未在市场清单中（或缺少 entry）"));
+                            supervisor::set_flash(&format!("工作台 {id} 不可用：清单缺少打开入口"));
+                        }
+                    }
                 }
             }
             UserEvent::Tray => {}
             UserEvent::UpdateDone => self.rebuild(),
             UserEvent::PluginDone => self.rebuild(),
+            UserEvent::MarketDone => self.rebuild(),
         }
     }
+}
+
+/// 从菜单项 id 提取插件 npm 包名：去掉 action 前缀与 `|组名` 后缀。
+fn plugin_id_from_menu(item_id: &str, prefix: &str) -> String {
+    item_id
+        .trim_start_matches(prefix)
+        .split('|')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 impl App {
@@ -170,6 +214,7 @@ impl App {
                 Err(e) => format!("插件操作失败: {e}"),
             };
             supervisor::log(&msg);
+            supervisor::set_flash(&msg);
             let _ = proxy.send_event(UserEvent::PluginDone);
         });
     }
@@ -182,7 +227,8 @@ impl App {
             self.ids = ids;
         }
         let st = supervisor::status();
-        if st.ready && !self.auto_opened {
+        // 首次向导成功时由向导接管打开引擎窗口（handed_off），托盘不再重复开（防双窗口）
+        if st.ready && !self.auto_opened && !crate::wizard::handed_off() {
             self.auto_opened = true;
             open_browser(&self.url);
         }
@@ -229,6 +275,21 @@ pub fn run_tray(url: &str) {
             let _ = proxy.send_event(UserEvent::UpdateDone);
         });
     }
+    // 后台拉取远程市场清单（verified.json）：离线/失败静默回退内置清单，不打扰小白。
+    {
+        let proxy = event_loop.create_proxy();
+        std::thread::spawn(move || {
+            match plugins::refresh_market_catalog() {
+                Ok(n) if n > 0 => {
+                    supervisor::log(&format!("市场清单已更新（远程 {n} 个插件）"));
+                    supervisor::set_flash(&format!("市场清单已更新（远程 {n} 个插件）"));
+                }
+                Ok(_) => supervisor::log("市场清单拉取成功（无远程条目）"),
+                Err(e) => supervisor::log(&format!("市场清单拉取失败（用内置清单）: {e}")),
+            }
+            let _ = proxy.send_event(UserEvent::MarketDone);
+        });
+    }
     // 不做启动自动检查更新（加快启动速度，用户需要时手动「检查更新」）
 
     if let Err(e) = event_loop.run_app(&mut app) {
@@ -257,6 +318,7 @@ fn build_menu() -> (Menu, TrayIds) {
         )
     });
     let restart_item = MenuItem::new("重启引擎", true, None);
+    let status_item_page = MenuItem::new("运行状态（壳管理页）", true, None);
     let autostart_item = CheckMenuItem::with_id(
         "autostart",
         if autostart_enabled() { "开机自启：开" } else { "开机自启：关" },
@@ -280,6 +342,7 @@ fn build_menu() -> (Menu, TrayIds) {
         let _ = menu.append(item);
     }
     let _ = menu.append(&restart_item);
+    let _ = menu.append(&status_item_page);
     let _ = menu.append(&autostart_item);
     let _ = menu.append(&logs_item);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -292,37 +355,85 @@ fn build_menu() -> (Menu, TrayIds) {
         apply: apply_item.as_ref().map(|i| i.id().clone()).unwrap_or_else(|| MenuId::new("apply-update-none")),
         restart: restart_item.id().clone(),
         autostart: autostart_item.id().clone(),
+        status: status_item_page.id().clone(),
         logs: logs_item.id().clone(),
         quit: quit_item.id().clone(),
     };
     (menu, ids)
 }
 
-/// 插件市场子菜单：内置可信清单（✓已验证）+ 当前已装状态；点击即装/卸（后台执行）
+/// 市场子菜单：工作台按场景分组优先 + 单件工具按标签分组 + 「全部」完整列表。
+/// 工作台条目（kind=workbench，有 entry）点击 = 打开本地资产（不装/卸 npm 包）；
+/// 单件工具 = 装/卸（后台执行）。分组子菜单的项 id 附 `|组名` 后缀，
+/// 事件处理时剥离（见 plugin_id_from_menu）。
 fn build_market_submenu() -> Submenu {
-    let sub = Submenu::new("插件市场", true);
+    let sub = Submenu::new("市场", true);
     let installed = plugins::installed_plugins();
-    let catalog = plugins::builtin_marketplace();
+    let catalog = plugins::market_catalog();
     if catalog.is_empty() {
         let _ = sub.append(&MenuItem::new("（暂无已验证插件）", false, None));
         return sub;
     }
-    for p in &catalog {
-        let has = installed.iter().any(|i| i == &p.id);
-        let dot = if has { "●" } else { "○" };
-        let marker = if p.verified { "✓已验证" } else { "未验证" };
-        let action = if has { "卸载" } else { "安装" };
-        let id = if has { format!("plugin:uninstall:{}", p.id) } else { format!("plugin:install:{}", p.id) };
-        let label = format!("{dot} {} v{} {marker}　[{}]", p.name, p.version, action);
-        let it = MenuItem::with_id(id, label, true, None);
-        let _ = sub.append(&it);
+    let groups = plugins::marketplace_groups(&catalog);
+    if !groups.is_empty() {
+        for (label, items) in &groups {
+            let gsub = Submenu::new(label, true);
+            for p in items {
+                append_plugin_item(&gsub, p, &installed, label);
+            }
+            let _ = sub.append(&gsub);
+        }
+        let _ = sub.append(&PredefinedMenuItem::separator());
     }
+    let all = Submenu::new("全部", true);
+    for p in &catalog {
+        append_plugin_item(&all, p, &installed, "");
+    }
+    let _ = sub.append(&all);
     let _ = sub.append(&PredefinedMenuItem::separator());
     let _ = sub.append(&MenuItem::new(format!("已安装 {} 个插件", installed.len()), false, None));
     sub
 }
 
+/// 单个商品行：●/○ 状态 + ✓已验证 + 动作。工作台 → [打开]（本地资产入口）；
+/// 单件工具 → [安装/卸载]（npm 包）。group 非空时 id 附 `|group` 后缀。
+fn append_plugin_item(sub: &Submenu, p: &plugins::PluginInfo, installed: &[String], group: &str) {
+    let has = installed.iter().any(|i| i == &p.id);
+    let marker = if p.verified { "✓已验证" } else { "未验证" };
+    let suffix = if group.is_empty() { String::new() } else { format!("|{group}") };
+    if p.is_workbench() {
+        // 工作台：本地资产形态 → 直接打开入口（无 npm 包可装）；资产缺失标 ✗
+        let present = p.entry.as_deref().map_or(false, local_asset_present);
+        let dot = if present { "●" } else { "✗" };
+        let id = format!("workbench:open:{}{suffix}", p.id);
+        let label = format!("{dot} {} v{} {marker}　[打开]", p.name, p.version);
+        let _ = sub.append(&MenuItem::with_id(id, label, true, None));
+        return;
+    }
+    let dot = if has { "●" } else { "○" };
+    let (id, action) = if has {
+        (format!("plugin:uninstall:{}{suffix}", p.id), "卸载".to_string())
+    } else {
+        (format!("plugin:install:{}{suffix}", p.id), "安装".to_string())
+    };
+    let label = format!("{dot} {} v{} {marker}　[{action}]", p.name, p.version);
+    let it = MenuItem::with_id(id, label, true, None);
+    let _ = sub.append(&it);
+}
+
+/// 工作台本地资产是否存在：entry 为 file:// 本地路径时检查文件；URL 视为可用。
+/// pub(crate)：status_page 渲染工作台状态复用同一判定。
+pub(crate) fn local_asset_present(entry: &str) -> bool {
+    if let Some(path) = entry.strip_prefix("file:///") {
+        let sep = std::path::MAIN_SEPARATOR;
+        std::path::Path::new(&path.replace('/', &sep.to_string())).is_file()
+    } else {
+        true
+    }
+}
+
 /// 状态行文案：DSH 伴侣 v0.1.0-rc.6｜运行中 ✓ / 启动中… / 已停止 ✗（附错误）
+/// 优先级：安装 stage > 瞬时提示（插件/更新结果）> 引擎状态；有更新待确认时追加 ⚑ 提示
 fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
     let ver = st
         .version
@@ -331,6 +442,8 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
         .unwrap_or_else(|| "未安装".to_string());
     let body = if !st.stage.is_empty() {
         st.stage.clone() // 阶段提示（首次安装/下载/启动中）优先
+    } else if let Some(f) = supervisor::flash() {
+        f // 瞬时提示（插件装/卸、更新结果），12s 后消失
     } else if st.running {
         if st.ready {
             format!("运行中 ✓ http://127.0.0.1:{}", st.port)
@@ -344,7 +457,13 @@ fn status_line(st: &supervisor::SuperStatus, state: &runtime::State) -> String {
     } else {
         "已停止 ✗".to_string()
     };
-    format!("DSH 伴侣 v{ver}｜{body}")
+    let mut line = format!("DSH 伴侣 v{ver}｜{body}");
+    if let Some(p) = &state.pending {
+        if st.stage.is_empty() {
+            line = format!("{line} ⚑ 有更新 v{p}（菜单应用更新）");
+        }
+    }
+    line
 }
 
 fn build_tray(menu: Menu) -> Option<tray_icon::TrayIcon> {
@@ -446,6 +565,46 @@ mod icon_tests {
         assert_eq!(app_browser_args("http://127.0.0.1:3080"), vec!["--app=http://127.0.0.1:3080"]);
     }
 
+    /// 窗口几何参数：未记录过 → 空（浏览器默认位置/大小）；记录过 → 带 --window-position/--window-size
+    #[test]
+    fn window_flags_from_config() {
+        // 隔离 home，避免污染真实 config.json
+        let tmp = std::env::temp_dir().join(format!("dsh-wflags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var("DSH_DESKTOP_HOME", &tmp);
+
+        // 未记录：空参数
+        assert!(window_flags().is_empty());
+
+        // 记录位置 + 大小后：按 DIP 整数格式输出
+        let mut cfg = config::load();
+        cfg.window_pos = Some((120, 80));
+        cfg.window_size = Some((1440, 900));
+        config::save(&cfg);
+        let flags = window_flags();
+        assert!(flags.contains(&"--window-position=120,80".to_string()));
+        assert!(flags.contains(&"--window-size=1440,900".to_string()));
+
+        // 只有位置：只输出 position
+        let mut cfg = config::load();
+        cfg.window_pos = Some((10, 20));
+        cfg.window_size = None;
+        config::save(&cfg);
+        let flags = window_flags();
+        assert_eq!(flags, vec!["--window-position=10,20".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::remove_var("DSH_DESKTOP_HOME");
+    }
+
+    /// DIP 换算：96 DPI（1x 缩放）物理像素 == DIP；150% 缩放时物理 1920x1080 → DIP 1280x720
+    #[test]
+    fn dip_scale_at_150_percent() {
+        let scale: f64 = 144.0 / 96.0;
+        assert_eq!(((1920.0 / scale).round() as i32, (1080.0 / scale).round() as i32), (1280, 720));
+        assert_eq!(((96.0 / scale).round() as i32, (96.0 / scale).round() as i32), (64, 64));
+    }
+
     /// 浏览器探测：命中的路径必须真实存在；未命中合法（调用方回退系统浏览器）
     #[test]
     fn browser_probe_exists_when_hit() {
@@ -513,13 +672,29 @@ fn app_browser_args(url: &str) -> Vec<String> {
     vec![format!("--app={url}")]
 }
 
-/// 以独立窗口打开 URL（Edge/Chrome --app）；找不到浏览器则 false（调用方回退）
-fn open_app_window(url: &str) -> bool {
+/// 从 config 读用户最后使用的窗口几何（DIP），拼 Chromium --window-position/--window-size 参数。
+/// 只对 --app 窗口生效（引擎/向导/壳管理页统一用此路径打开）；没记录过 → 空参数，浏览器默认。
+fn window_flags() -> Vec<String> {
+    let cfg = config::load();
+    let mut args = Vec::new();
+    if let Some((x, y)) = cfg.window_pos {
+        args.push(format!("--window-position={x},{y}"));
+    }
+    if let Some((w, h)) = cfg.window_size {
+        args.push(format!("--window-size={w},{h}"));
+    }
+    args
+}
+
+/// 以独立窗口打开 URL（Edge/Chrome --app）；找不到浏览器则 false（调用方回退）。
+/// 打开成功后后台记录窗口几何（位置/大小，下次启动恢复——见 record_window_geometry）。
+pub fn open_app_window(url: &str) -> bool {
     if let Some(browser) = find_app_browser() {
         let mut cmd = std::process::Command::new(&browser);
-        cmd.args(app_browser_args(url));
+        cmd.args(app_browser_args(url)).args(window_flags());
         supervisor::hide_window(&mut cmd);
-        if cmd.spawn().is_ok() {
+        if let Ok(child) = cmd.spawn() {
+            record_window_geometry(child.id());
             return true;
         }
     }
@@ -527,7 +702,7 @@ fn open_app_window(url: &str) -> bool {
 }
 
 /// 打开界面：优先独立桌面窗口（--app）；无 Edge/Chrome 时回退系统默认浏览器
-fn open_browser(url: &str) {
+pub fn open_browser(url: &str) {
     if open_app_window(url) {
         return;
     }
@@ -535,7 +710,7 @@ fn open_browser(url: &str) {
 }
 
 /// 强制用系统默认浏览器打开（调试/高级用户：可看 DevTools、多标签）
-fn open_system_browser(url: &str) {
+pub fn open_system_browser(url: &str) {
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd")
         .args(["/C", "start", "", url])
@@ -544,7 +719,7 @@ fn open_system_browser(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
-fn open_dir(dir: &std::path::Path) {
+pub fn open_dir(dir: &std::path::Path) {
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd")
         .args(["/C", "start", "", &dir.display().to_string()])
@@ -591,4 +766,92 @@ pub fn set_autostart(on: bool) -> std::io::Result<()> {
         let _ = key.delete_value(AUTOSTART_NAME);
     }
     Ok(())
+}
+
+// ---------- 窗口几何记录（--app 窗口位置/大小持久化） ----------
+//
+// 浏览器 --app 窗口的几何由 Chromium 自持，壳无法直接读取/设置其内存状态；
+// 用 Win32 枚举顶层窗口，按 pid 匹配该浏览器进程的可见主窗口，把矩形（物理像素）
+// 按该窗口 DPI 换算成 DIP 存进 config。下次打开 --app 时经 window_flags 恢复。
+// 每 5s 采样一次，直到窗口消失（连续 6 次找不到）或超时 5 分钟（浏览器冷启动慢）。
+
+struct GeometryState {
+    target_pid: u32,
+    rect: Option<(i32, i32, i32, i32)>, // left, top, width, height（物理像素）
+    dpi: u32,
+}
+
+unsafe extern "system" fn enum_window_proc(hwnd: windows_sys::Win32::Foundation::HWND, lparam: windows_sys::Win32::Foundation::LPARAM) -> windows_sys::Win32::Foundation::BOOL {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    let state = &mut *(lparam as *mut GeometryState);
+    if IsWindowVisible(hwnd) == 0 {
+        return 1; // 继续枚举
+    }
+    let mut wpid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut wpid);
+    if wpid != state.target_pid {
+        return 1;
+    }
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if GetWindowRect(hwnd, &mut r) == 0 {
+        return 1;
+    }
+    state.dpi = GetDpiForWindow(hwnd);
+    state.rect = Some((r.left, r.top, r.right - r.left, r.bottom - r.top));
+    0 // 找到目标窗口，停止枚举
+}
+
+/// 枚举所有顶层窗口，找属于 pid 的可见窗口矩形，换算为 DIP 的 (pos, size)
+fn find_window_geometry(pid: u32) -> Option<((i32, i32), (i32, i32))> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+    let mut state = GeometryState { target_pid: pid, rect: None, dpi: 96 };
+    let ptr = &mut state as *mut GeometryState;
+    unsafe {
+        EnumWindows(Some(enum_window_proc), ptr as windows_sys::Win32::Foundation::LPARAM);
+    }
+    let (l, t, w, h) = state.rect?;
+    // 粗校验：过小的窗口是通知/工具窗而非主窗口
+    if w < 200 || h < 120 {
+        return None;
+    }
+    let scale = state.dpi.max(1) as f64 / 96.0;
+    Some((
+        (((l as f64) / scale).round() as i32, ((t as f64) / scale).round() as i32),
+        (((w as f64) / scale).round() as i32, ((h as f64) / scale).round() as i32),
+    ))
+}
+
+fn save_window_geometry(pos: (i32, i32), size: (i32, i32)) {
+    let mut cfg = config::load();
+    cfg.window_pos = Some(pos);
+    cfg.window_size = Some(size);
+    config::save(&cfg);
+}
+
+/// 后台记录 --app 窗口几何：每 5s 采样一次；窗口消失（连续 6 次）或超时即停。
+/// 位置/大小变化时写 config（下次启动恢复），写不成功静默（不影响主流程）。
+fn record_window_geometry(pid: u32) {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        let mut misses = 0u32;
+        while std::time::Instant::now() < deadline {
+            match find_window_geometry(pid) {
+                Some((pos, size)) => {
+                    misses = 0;
+                    save_window_geometry(pos, size);
+                }
+                None => {
+                    misses += 1;
+                    if misses >= 6 {
+                        break; // 连续 ~30s 找不到 → 窗口已关闭
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
 }
