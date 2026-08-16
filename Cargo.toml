@@ -22,6 +22,10 @@ zip = "0.6"
 resvg = { version = "0.44", default-features = false }
 # 托盘图标颜色跟随系统主题（浅色任务栏用黑 logo、深色用白 logo）
 winreg = "0.52"
+# 首次向导：本地 HTTP 服务（向导页轮询安装状态；reqwest 只发请求不监听，缺服务端）
+tiny_http = "0.12"
+# 窗口几何记录：枚举浏览器 --app 窗口取矩形（EnumWindows 系 Win32；winreg 已拉 windows-sys，版本对齐 0.59）
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi"] }
 
 [build-dependencies]
 # 把 resources/icon.ico 嵌入 exe（资源管理器/任务栏图标）

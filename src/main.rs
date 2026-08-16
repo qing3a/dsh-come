@@ -9,9 +9,21 @@
 mod config;
 mod plugins;
 mod runtime;
+mod status_page;
 mod supervisor;
 mod tray;
 mod updater;
+mod wizard;
+
+/// 首次引导序列：自举安装 Node → 无锁定版本则装 latest 并启动引擎。
+/// 返回 Err 表示安装失败（含原因）——调用方（首次向导/后台线程）决定重试或放弃。
+pub fn run_first_boot(cfg: &config::AppConfig) -> Result<(), String> {
+    runtime::ensure_node()?;
+    if !updater::bootstrap(cfg) {
+        return Err(format!("首次引导失败（详见 {}）", runtime::engine_log().display()));
+    }
+    Ok(())
+}
 
 fn main() {
     let mut port: u16 = std::env::var("DSH_DESKTOP_PORT")
@@ -53,18 +65,11 @@ fn main() {
     let url = format!("http://127.0.0.1:{}", cfg.port);
     eprintln!("DSH 伴侣已启动: {url}  根目录: {}", runtime::root_dir().display());
 
-    // 后台首次引导：自举安装 Node → 无已装版本则自动装 latest 并启动引擎（托盘状态行反映进度）
+    // 启动页：首次运行显示安装进度（Node/DSH 下载解压），正常启动显示「启动中…」；
+    // 引擎就绪后页面在同一窗口跳转引擎 UI，避免用户对着空白/黑窗干等。
     {
         let cfg = cfg.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = runtime::ensure_node() {
-                eprintln!("Node 自举安装失败: {e}");
-                return;
-            }
-            if !updater::bootstrap(&cfg) {
-                eprintln!("首次引导失败（详见 {}）", runtime::engine_log().display());
-            }
-        });
+        std::thread::spawn(move || wizard::start(&cfg));
     }
 
     if no_tray {

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.svg">
+<title>DSH 伴侣 · 首次安装</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel2: #1e222c;
+    --text: #e8eaf0;
+    --muted: #9aa2b1;
+    --accent: #4f6ef7;
+    --accent-dim: #3a56c9;
+    --ok: #34c759;
+    --err: #ff5c5c;
+    --border: #262b38;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    width: 460px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 36px 28px;
+    text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,.4);
+  }
+  .logo { width: 56px; height: 56px; margin: 0 auto 18px; display: block; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 26px; }
+
+  /* 进行中：spinner + 阶段文案 */
+  .progress { display: none; }
+  .progress.show { display: block; }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 3px solid var(--panel2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 18px;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #stage { color: var(--muted); font-size: 14px; min-height: 20px; }
+
+  /* 完成 */
+  .done { display: none; }
+  .done.show { display: block; }
+  .check {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(52,199,89,.15);
+    color: var(--ok);
+    font-size: 22px;
+    line-height: 40px;
+    margin: 0 auto 18px;
+  }
+  .done h2 { font-size: 18px; margin-bottom: 6px; }
+  .done .sub { margin-bottom: 24px; }
+
+  /* 失败 */
+  .fail { display: none; }
+  .fail.show { display: block; }
+  .fail-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(255,92,92,.12);
+    color: var(--err);
+    font-size: 22px;
+    line-height: 40px;
+    margin: 0 auto 18px;
+  }
+  .fail h2 { font-size: 18px; margin-bottom: 14px; }
+  .errbox {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: left;
+    padding: 12px 14px;
+    margin-bottom: 20px;
+    word-break: break-word;
+    max-height: 180px;
+    overflow: auto;
+  }
+
+  .btns { display: flex; gap: 10px; justify-content: center; margin-top: 22px; }
+  .btn {
+    border: none;
+    border-radius: 8px;
+    padding: 10px 22px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background .15s;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-dim); }
+  .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { color: var(--text); border-color: #3a4152; }
+  .loglink { margin-top: 14px; font-size: 12px; color: var(--muted); }
+  .loglink a { color: var(--accent); text-decoration: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="card">
+  <img class="logo" src="/favicon.svg" alt="DSH">
+  <h1>DSH 伴侣</h1>
+  <p class="sub">首次运行需要自动下载并安装运行环境（约 30MB），请保持网络连接。</p>
+
+  <div id="view-progress" class="progress show">
+    <div class="spinner"></div>
+    <div id="stage">正在准备…</div>
+  </div>
+
+  <div id="view-done" class="done">
+    <div class="check">✓</div>
+    <h2>安装完成</h2>
+    <p class="sub">界面即将打开，托盘图标常驻后台。</p>
+    <div class="btns">
+      <button id="btn-open" class="btn btn-primary">打开 DSH 伴侣</button>
+    </div>
+  </div>
+
+  <div id="view-fail" class="fail">
+    <div class="fail-icon">✕</div>
+    <h2>安装失败</h2>
+    <div id="errmsg" class="errbox"></div>
+    <div class="btns">
+      <button id="btn-retry" class="btn btn-primary">重试</button>
+      <button id="btn-logs" class="btn btn-ghost">查看日志</button>
+    </div>
+    <div class="loglink"><a id="logs-link">打开日志目录</a></div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const views = {
+    progress: $("view-progress"),
+    done: $("view-done"),
+    fail: $("view-fail"),
+  };
+  let busy = false;
+
+  function show(view) {
+    for (const v of Object.values(views)) v.classList.remove("show");
+    views[view].classList.add("show");
+  }
+
+  async function get(path, opts) {
+    const r = await fetch(path, opts);
+    return r.json();
+  }
+
+  async function poll() {
+    try {
+      const s = await get("/api/status");
+      if (s.phase === "installing") {
+        show("progress");
+        $("stage").textContent = s.stage || "正在准备…";
+      } else if (s.phase === "starting") {
+        show("progress");
+        $("stage").textContent = "正在启动引擎…";
+      } else if (s.phase === "ready") {
+        // 同一窗口跳转引擎页（不再新开窗口）：先回退到向导再导航，
+        // 避免每次轮询都对已跳转的引擎页重复执行
+        if (!location.pathname.startsWith("/desktop") && !location.href.startsWith(s.engine_url)) {
+          location.href = s.engine_url;
+          return;
+        }
+        show("done");
+      } else if (s.phase === "failed") {
+        show("fail");
+        $("errmsg").textContent = s.error || "未知错误，请查看日志。";
+      }
+    } catch (e) {
+      // 本地服务暂不可达（重启瞬间），下次轮询再试
+    }
+  }
+
+  $("btn-open").addEventListener("click", () => get("/api/open-app"));
+  $("btn-retry").addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    $("btn-retry").disabled = true;
+    $("btn-retry").textContent = "正在重试…";
+    try {
+      await get("/api/retry", { method: "POST" });
+    } catch (e) { /* 服务在重启安装期间仍在线，失败则下次轮询回到进行中 */ }
+  });
+  $("btn-logs").addEventListener("click", () => get("/api/open-logs", { method: "POST" }));
+  $("logs-link").addEventListener("click", () => get("/api/open-logs", { method: "POST" }));
+
+  poll();
+  setInterval(poll, 800);
+</script>
+</body>
+</html>
