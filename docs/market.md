@@ -1,15 +1,19 @@
 # 市场策略（market）— dsh-market 协作 + 工作台收录
 
 > 2026-08-17 定案：**单件工具目录交给 [dsh-market](https://github.com/dsh-market/dsh-market)
-> （DSH 可视化插件市场）**，壳内置清单只保留**工作台**（kind=workbench，场景整包）。
-> 市场是「清单 + 打开/装/卸」，不是商店（无评分/账号/支付，见 DESIGN.md 非目标）。
+> （DSH 可视化插件市场）**。市场是「清单 + 打开/装/卸」，不是商店（无评分/账号/支付，见 DESIGN.md 非目标）。
+
+> ⚠️ **2026-08-18 瘦身修订**：壳内市场代码（`plugins.rs`、内置工作台清单、托盘市场菜单、壳管理页）
+> 已随 `docs/slimming-plan.md` **全部移除**。工作台商品的「壳内分组 + 打开入口」能力当前**未实现**；
+> 本节记录的是移除前的市场设计，如需恢复按 slimming-plan 评估（壳保持「越做越薄」，工作台入口
+> 优先考虑做成 dsh 插件或由 dsh web UI 承载，而不是回到壳内清单）。
 
 ## 1. 分工
 
 | 层 | 干什么 | 入口 |
 |---|---|---|
 | **dsh-market**（DSH 生态插件） | 浏览/搜索/安装 800+ 社区插件、主题、逐插件更新、备份恢复、诊断 | dsh web 的 Settings → Plugin Market |
-| **壳（dsh-come）** | 引导安装 dsh-market（托盘「安装/打开插件市场」一键 `dsh plugin add dshmarket`）+ **工作台分组**（场景完整业务包，打开本地资产/URL 入口） | 托盘「市场」子菜单 + 壳管理页「工作台」卡片 |
+| **壳（dsh-come）** | （瘦身后仅）come.patch.yml 禁用 dsh-market 的 detached 一键重启 | 无市场入口；dsh-market 经 `dsh plugin add dshmarket` 安装 |
 
 工作台是 dsh-market 没有的商品形态（「工具 + 会话 UI + 业务规则」整包，需要场景分组与打开
 语义），保留在壳内是差异化。dsh-market 安装后，其 detached 一键重启会被壳的 patch overlay
@@ -38,17 +42,14 @@
    web 应用 + 外部服务，entry 指向入口）。是否升级为 dsh 插件是**商品项目自己的事**。
 4. **资产归位**：本地资产工作台的项目文件放它自己的仓库/目录；本仓库清单只写引用路径，不拷贝资产。
 
-## 4. 上架流程
+## 4. 上架流程（v1 记录；壳内清单已随瘦身移除，此节仅存档）
 
 1. 商品项目完成验证（e2e 等），产出一条 `PluginInfo`。
-2. **两处同步登记**（改 dsh-come 仓库）：
-   - `verified-plugins.json`（远程清单，GitHub raw，壳启动后拉取合并）
-   - `src/plugins.rs::builtin_marketplace()`（内置兜底清单，离线可用）
-3. 壳编译发版后：托盘「市场」出现工作台分组，条目 [打开] 直接进入口；
-   壳管理页「工作台」卡片显示就绪状态与依赖提示。
+2. （v1）两处同步登记：`verified-plugins.json`（远程清单）+ `src/plugins.rs::builtin_marketplace()`（内置兜底）。
+3. （v1）壳编译发版后：托盘「市场」出现工作台分组，条目 [打开] 直接进入口；壳管理页「工作台」卡片显示就绪状态与依赖提示。
 
 > 若工作台同时做成 dsh 插件要进社区目录，走 awesome-dsh-plugin 注册表 PR
-> （dsh-market 的目录来源，上架后自动进市场），与本流程互不影响。
+> （dsh-market 的目录来源，上架后自动进市场）。这是当前仍然有效的上架通道。
 
 ## 5. 当前工作台
 

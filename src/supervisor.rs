@@ -4,21 +4,21 @@
 //! 不依赖其内部 API，因此 DSH 发新版不会破坏壳。
 //!
 //! 与 md-agent engine.rs 的差异（本项目的改进点）：
-//! - 启动走 **npx 通道**：`node npx-cli.js --yes @deepseek-ai/dsh@<ver> web ...`，
-//!   版本解析/下载/缓存全交给 npm 生态，壳只维护 state.current 一个版本号
-//!   （npx-cli.js 是 js 非 .cmd，node 直启免 cmd /C 包装）
+//! - 启动走 **系统 dsh 命令**（PATH 直启，无 npx 临时拉取回退——2026-08-19 用户拍板）：
+//!   dsh 缺失就正常安装（src/installer.rs：npm install -g @deepseek-ai/dsh），
+//!   壳不做版本管理/数据隔离，跟随系统 dsh 的「正常设计逻辑」（docs/cli-contract.md）
 //! - 崩溃重启用**指数退避**（md-agent 是固定 1s）
 //! - 就绪探测用 **HTTP GET 200**（契约 C2），而非仅 TCP 可连
-//! - spawn 时设置 cwd + DSH_HOME（契约 C3），数据/配置全隔离在启动器 home
+//! - 不设置 DSH_HOME：dsh 用其系统默认目录（%USERPROFILE%\.dsh），与终端里用法完全一致
 //! - 日志滚动（>5MB 轮转 .1），而非无限追加
 
 use crate::config::AppConfig;
 use crate::runtime;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 /// 引擎状态（托盘状态行读取）
@@ -32,12 +32,17 @@ pub struct SuperStatus {
     pub last_error: Option<String>,
     /// 是否自动重启（手动 start 置 true、手动 stop 置 false；异常退出自动拉起）
     pub auto_restart: bool,
-    /// 当前版本（from state.current，托盘状态行展示）
+    /// 当前版本（系统 dsh `--version` 探测；不可得 → None，状态行显示「系统 dsh」）
     pub version: Option<String>,
     /// 连续重启次数
     pub restarts: u32,
+    /// 该 dsh 是否由本进程 spawn（拥有）：false = 认领的外部/残留 dsh，
+    /// stop/重启不误杀它（只解除认领）
+    pub owned: bool,
     /// 当前阶段提示（首次安装/下载/启动中…，托盘状态行展示；空 = 无阶段）
     pub stage: String,
+    /// 阶段已持续的秒数（stage 非空时才有；托盘/向导显示「已 X 分 Y 秒」）
+    pub stage_elapsed: Option<u64>,
 }
 
 impl Default for SuperStatus {
@@ -51,7 +56,9 @@ impl Default for SuperStatus {
             auto_restart: false,
             version: None,
             restarts: 0,
+            owned: true,
             stage: String::new(),
+            stage_elapsed: None,
         }
     }
 }
@@ -62,37 +69,103 @@ struct SuperState {
     /// 本次启动时刻：连续运行超 HEALTHY_RESET_SECS 视为健康，重启预算清零
     /// （md-agent 同款隐患：start() 内清零 restarts 会让崩溃上限永不触发 → 无限重启）
     last_start: std::time::Instant,
+    /// stage 被设置的时刻（status() 据此计算 stage_elapsed；None = 无阶段）
+    stage_since: Option<std::time::Instant>,
+    /// 急救兜底是否已用过（防止崩溃上限耗尽后无限循环 Emergency）
+    emergency_used: bool,
+    /// 上次对认领的外部 dsh 探活的时刻（monitor 每 ADOPT_PROBE_INTERVAL_SECS 探一次）
+    last_adopt_probe: std::time::Instant,
+    /// 认领探活连续失败次数（http 不 200 且端口无人/原 pid 监听）；≥3 判定外部 dsh 已死
+    adopt_misses: u32,
+    /// 上次对自有引擎页面探活的时刻（monitor 每 PAGE_PROBE_INTERVAL_SECS 探一次）
+    last_page_probe: std::time::Instant,
+    /// 页面探活连续失败次数；≥3 判定界面无响应 → 杀进程走既有崩溃重启链路
+    page_misses: u32,
 }
 
 /// 连续存活超此时长（秒）→ 重启预算清零（短时间内反复崩溃才累计）
 const HEALTHY_RESET_SECS: u64 = 30;
 
+/// 认领的外部 dsh 探活周期（秒）：monitor 每 1s 循环，但探活节流到该间隔
+const ADOPT_PROBE_INTERVAL_SECS: u64 = 5;
+
+/// 认领探活连续失败多少次判定外部 dsh 已死
+const ADOPT_PROBE_MISS_LIMIT: u32 = 3;
+
+/// 自有引擎页面探活周期（秒）：已就绪的 owned 引擎每 30s HTTP 探测一次。
+/// 比 adopt 探活保守——判死会杀进程重启，窗口要滤掉 dsh 内部组件短暂重启的抖动。
+const PAGE_PROBE_INTERVAL_SECS: u64 = 30;
+
+/// 页面探活连续失败多少次判定界面无响应（约 1.5 分钟）
+const PAGE_PROBE_MISS_LIMIT: u32 = 3;
+
 static STATE: OnceLock<Arc<Mutex<SuperState>>> = OnceLock::new();
 static MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 最近一次 engine.log 写入时刻（unix 秒）：心跳检测「日志静默」用
+static LAST_LOG_AT: AtomicU64 = AtomicU64::new(0);
 
 fn state() -> &'static Arc<Mutex<SuperState>> {
     STATE.get_or_init(|| {
+        let now = std::time::Instant::now();
         Arc::new(Mutex::new(SuperState {
             child: None,
             status: SuperStatus::default(),
-            last_start: std::time::Instant::now(),
+            last_start: now,
+            stage_since: None,
+            emergency_used: false,
+            last_adopt_probe: now,
+            adopt_misses: 0,
+            last_page_probe: now,
+            page_misses: 0,
         }))
     })
 }
 
 /// 当前引擎状态快照
 pub fn status() -> SuperStatus {
-    state().lock().map(|s| s.status.clone()).unwrap_or_default()
+    let mut out = SuperStatus::default();
+    if let Ok(st) = state().lock() {
+        out = st.status.clone();
+        // stage 非空 → 补算已持续秒数（stage_since 由 set_stage 维护）
+        if !out.stage.is_empty() {
+            if let Some(since) = st.stage_since {
+                out.stage_elapsed = Some(since.elapsed().as_secs());
+            }
+        }
+    }
+    out
 }
 
-/// 设置当前阶段提示（首次安装/下载/启动中…；空字符串清除）——托盘状态行实时反馈
+/// 设置当前阶段提示（首次安装/下载/启动中…；空字符串清除）——托盘状态行实时反馈。
+/// 同时记录 stage_since，供 status() 计算「已耗时」。
 pub fn set_stage(s: &str) {
     if let Ok(mut st) = state().lock() {
         st.status.stage = s.to_string();
+        st.stage_since = if s.is_empty() {
+            None
+        } else {
+            Some(std::time::Instant::now())
+        };
     }
 }
 
-/// 日志入口（供 updater / tray 等其他模块写引擎滚动日志）
+/// 秒 → 人类可读时长：「45 秒」/「1 分 24 秒」。托盘/向导展示安装已耗时。
+pub fn fmt_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} 秒")
+    } else {
+        format!("{} 分 {} 秒", secs / 60, secs % 60)
+    }
+}
+
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 日志入口（供 tray / plugins 等其他模块写引擎滚动日志）
 pub fn log(line: &str) {
     append_log(line);
 }
@@ -147,19 +220,23 @@ fn append_log(line: &str) {
     if path.exists() {
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > 5 * 1024 * 1024 {
+                // 先删旧的 .log.1 再轮转（Windows 上 rename 覆盖已存在目标会失败）
+                let _ = std::fs::remove_file(path.with_extension("log.1"));
                 let _ = std::fs::rename(&path, path.with_extension("log.1"));
             }
         }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "[{}] {line}", chrono::Local::now().format("%H:%M:%S"));
+        // 记录最近写入时刻：心跳检测（heartbeat_if_silent）据此判断「日志静默」
+        LAST_LOG_AT.store(unix_secs(), Ordering::Relaxed);
     }
 }
 
 // ---------- 健康探测（契约 C2） ----------
 
-/// HTTP GET 返回 200 即视为就绪（v1 只看状态码；后续加页面版本指纹，见 DESIGN §7.4）
-pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
+/// HTTP GET 返回 200 即视为就绪（v1 只看状态码；后续加页面版本指纹，见 DESIGN §7.4）。
+fn http_ok_path(port: u16, timeout_ms: u64, path: &str) -> bool {
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
@@ -168,7 +245,7 @@ pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
         Err(_) => return false,
     };
     match client
-        .get(format!("http://127.0.0.1:{port}/"))
+        .get(format!("http://127.0.0.1:{port}{path}"))
         .send()
     {
         Ok(resp) => resp.status().is_success(),
@@ -176,69 +253,68 @@ pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
     }
 }
 
-/// 等待就绪：最多 `startup_timeout_secs` 秒内轮询 HTTP 200
-fn wait_ready(port: u16, timeout_secs: u64) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    while std::time::Instant::now() < deadline {
-        if http_ok(port, 1000) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(500));
+/// 兼容旧调用：探首页 `/`。
+pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
+    http_ok_path(port, timeout_ms, "/")
+}
+
+/// 健康探测：优先专用健康口 `/api/health`（需 dsh 侧插件暴露，见 resources/dsh-health-plugin.js），
+/// 缺失自动降级到首页 `/` —— 不依赖插件也能探活。
+pub fn health_ok(port: u16, timeout_ms: u64) -> bool {
+    http_ok_path(port, timeout_ms, "/api/health") || http_ok_path(port, timeout_ms, "/")
+}
+
+/// 心跳：engine.log 静默超过 15s 且仍在阶段提示中（npm 非 TTY 输出被抑制，用户看不到
+/// 动静）→ 追加一行「仍在进行…」，让托盘/向导/日志都能看出没有卡死。写日志会刷新
+/// LAST_LOG_AT，故最多每 15s 打一次，不会刷屏。
+fn heartbeat_if_silent() {
+    const SILENT_BEFORE_HEARTBEAT: u64 = 15;
+    let now = unix_secs();
+    let last = LAST_LOG_AT.load(Ordering::Relaxed);
+    if last == 0 || now.saturating_sub(last) < SILENT_BEFORE_HEARTBEAT {
+        return;
     }
+    let st = status();
+    if st.stage.is_empty() {
+        return; // 无阶段提示（已就绪/已停止）不打扰
+    }
+    append_log(&format!(
+        "仍在进行：{stage}（npm 安装期输出少属正常，请耐心等待）",
+        stage = st.stage
+    ));
 }
 
 // ---------- 启动 / 停止 / 重启 ----------
 
-/// npx 通道参数（纯函数便于测试）：
-/// `--yes @deepseek-ai/dsh@<ver> [--patch <path>] web --host <host> --port <port>`
-/// - `--yes`：非交互环境自动确认（首次下载 dsh 包时 npx 会提示，必须显式传）
-/// - `@deepseek-ai/dsh@<ver>`：钉版本号（不追 latest，state.current 即锁定值）
-/// - `--patch <path>`：壳维护的 patch overlay（come.patch.yml，dsh-market 配置等）；
-///   dsh CLI 顶层选项（bin.js `--patch <path>` repeatable），npx 原样透传
-/// - 之后参数全部透传给 dsh CLI → web app（契约 C1）
-pub fn npx_argv(ver: &str, host: &str, port: u16, patch: Option<&std::path::Path>) -> Vec<String> {
-    let mut argv = vec![
-        "--yes".to_string(),
-        format!("@deepseek-ai/dsh@{ver}"),
-    ];
-    if let Some(p) = patch {
-        argv.push("--patch".to_string());
-        argv.push(p.display().to_string());
-    }
-    argv.extend([
+/// 构造启动命令（契约 C1）：系统 dsh 直启（`dsh web --host … --port …`）。
+/// dsh 命令经 cmd /C 包装（Windows .cmd 包装脚本 CreateProcess 不能直接执行）；
+/// 不设置 DSH_HOME，dsh 用其系统默认目录，与终端里正常使用完全一致。
+fn build_command(cfg: &AppConfig) -> Result<Command, String> {
+    let runner = runtime::dsh_runner().ok_or_else(|| {
+        "未找到系统 dsh。请先在管理页（http://127.0.0.1:<status_port>）安装 dsh，或执行 `npm install -g @deepseek-ai/dsh`。".to_string()
+    })?;
+    let mut args = vec![
         "web".to_string(),
         "--host".to_string(),
-        host.to_string(),
+        cfg.host.clone(),
         "--port".to_string(),
-        port.to_string(),
-    ]);
-    argv
-}
-
-/// 构造启动命令（契约 C1/C3）：node npx-cli.js <npx_argv>，cwd + DSH_HOME 隔离在启动器 home
-fn build_command(cfg: &AppConfig, ver: &str) -> Result<(Command, PathBuf), String> {
-    let node = runtime::node_exe();
-    let npx = runtime::npx_cli_js();
-    let home = runtime::home_dir();
-    if !node.is_file() {
-        return Err(format!(
-            "未找到捆绑 Node（{}）。请先放置 portable Node（node\\node.exe）或运行打包脚本。",
-            node.display()
-        ));
+        cfg.port.to_string(),
+    ];
+    // 壳 patch overlay（come.patch.yml，dsh-market 配置等）经 dsh CLI --patch 传入。
+    // 注意：dsh 0.1.0-rc.6 的 `web` 子命令**拒绝父级参数**——`dsh --patch x web …`
+    // 会报 "web takes none of parent --profile, --patch, …" 并退出(1)（2026-08-20 实测），
+    // 所以 --patch 必须放在 `web` 之后：`dsh web --patch x --host … --port …`（实测可行）。
+    if let Some(p) = come_patch_arg() {
+        args.insert(1, p.display().to_string());
+        args.insert(1, "--patch".to_string());
     }
-    if !npx.is_file() {
-        return Err(format!(
-            "未找到捆绑 npx-cli（{}）。请检查 portable Node 是否完整。",
-            npx.display()
-        ));
-    }
-    let mut cmd = Command::new(&node);
-    cmd.arg(&npx)
-        .args(npx_argv(ver, &cfg.host, cfg.port, come_patch_arg().as_deref()))
-        .current_dir(&home)
-        .env("DSH_HOME", &home);
+    let mut cmd = runtime::dsh_command(&runner, &args);
+    // 非 TTY（被重定向进 engine.log）时 npm 静默抑制进度条 → 用 npm_config_loglevel=http
+    // 让 npm 每发一个 HTTP 请求打一行（npm http fetch GET 200 …），engine.log 有持续的
+    // 「活着」信号；FORCE_COLOR=0 去 ANSI 颜色码。
+    cmd.env("npm_config_loglevel", "http").env("FORCE_COLOR", "0");
     hide_window(&mut cmd);
-    Ok((cmd, home))
+    Ok(cmd)
 }
 
 /// 壳 patch overlay 参数：come.patch.yml 存在才传（不存在 = 无 overlay 需求，不传）。
@@ -248,12 +324,41 @@ fn come_patch_arg() -> Option<std::path::PathBuf> {
 }
 
 /// 启动 dsh 引擎（已运行则幂等返回）。auto_restart 置 true → 异常退出自动拉起。
-pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
+pub fn start(cfg: &AppConfig) -> Result<(), String> {
     let mut st = state().lock().map_err(|e| e.to_string())?;
+    // 认领已在运行的 dsh：本进程 STATE 是全新时（dsh-come 刚启动 / 重启），若端口已被
+    // 外部或上次会话残留的 dsh 占住，直接再 spawn 一个会因端口冲突秒退、监测线程不断重启，
+    // 状态在「启动中…/已停止」间抖动——而真正服务的那个 dsh 它从不认领，正是用户看到的现象。
+    // 端口已被健康 dsh 占用 → 直接认领（owned=false，stop/重启不误杀外部进程）。
+    if health_ok(cfg.port, 1500) {
+        if let Some(pid) = crate::doctor::listening_pid_on_port(cfg.port) {
+            st.status.running = true;
+            st.status.ready = true;
+            st.status.pid = Some(pid);
+            st.status.owned = false; // 非本进程启动，stop/重启不杀它
+            st.status.auto_restart = false; // 外部进程，我们不负责崩溃重启
+            st.status.stage.clear();
+            st.status.last_error = None;
+            st.status.version = runtime::resolved_version(cfg);
+            st.adopt_misses = 0;
+            st.page_misses = 0;
+            st.last_adopt_probe = std::time::Instant::now();
+            drop(st); // 释放锁再起监测线程
+            let ver = runtime::resolved_version(cfg).unwrap_or_else(|| "系统 dsh".to_string());
+            append_log(&format!(
+                "检测到 dsh 已在端口 {} 运行（pid={}），已认领，不再重复启动（{ver}）",
+                cfg.port, pid
+            ));
+            ensure_monitor(cfg.clone());
+            return Ok(());
+        }
+    }
     if st.child.is_some() {
         return Ok(()); // 已在跑，幂等
     }
-    let (mut command, home) = build_command(cfg, ver)?;
+    let home = runtime::system_home_dir();
+    let runner_desc = runtime::dsh_runner().map(|r| r.describe()).unwrap_or_else(|| "（无）".to_string());
+    let mut command = build_command(cfg)?;
     // stdout/stderr 进滚动日志（管道不读会写满阻塞子进程——md-agent 踩坑）
     let log_path = runtime::engine_log();
     if let Some(dir) = log_path.parent() {
@@ -268,21 +373,30 @@ pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
     }
     let child = command.spawn().map_err(|e| {
         format!(
-            "启动 dsh 失败（node={} home={}）：{e}",
-            runtime::node_exe().display(),
+            "启动 dsh 失败（{}，DSH_HOME={}）：{e}",
+            runner_desc,
             home.display()
         )
     })?;
     let pid = child.id();
+    // 纳入 Job Object：整树（cmd→dsh.cmd→node）受 KILL_ON_JOB_CLOSE 约束——
+    // dsh-come 崩溃/退出时 OS 强杀整树，消除「守护进程崩→dsh 变孤儿占端口」。
+    // 失败仅记日志降级（仍可用 taskkill /T），不影响启动。
+    if !crate::job::assign_child(pid) {
+        append_log("⚠️ 引擎未纳入 Job Object（降级 taskkill /T；崩溃自愈仍可工作，但崩溃兜底稍弱）");
+    }
     st.child = Some(child);
     st.status.running = true;
     st.status.ready = false;
     st.status.port = cfg.port;
     st.status.pid = Some(pid);
+    st.status.owned = true; // 本进程 spawn 的引擎；退出时 taskkill 整树（外部认领的 dsh 不杀）
     st.status.last_error = None;
     st.status.auto_restart = true;
-    st.status.version = Some(ver.to_string());
-    // 阶段提示：调用方（bootstrap 首次安装）可能已设置更明确的阶段（如「下载 DSH…」），
+    st.status.version = runtime::resolved_version(cfg);
+    st.adopt_misses = 0;
+    st.page_misses = 0;
+    // 阶段提示：调用方可能已设置更明确的阶段（如「启动系统 dsh…」），
     // 只在为空时兜底「启动中…」
     if st.status.stage.is_empty() {
         st.status.stage = "启动中…".to_string();
@@ -292,22 +406,38 @@ pub fn start(cfg: &AppConfig, ver: &str) -> Result<(), String> {
     st.last_start = std::time::Instant::now();
     drop(st); // 释放锁再起后台线程
 
-    append_log(&format!("dsh 引擎启动 pid={pid} port={} ver={ver}", cfg.port));
+    let ver = runtime::resolved_version(cfg).unwrap_or_else(|| "系统 dsh".to_string());
+    append_log(&format!("dsh 引擎启动 pid={pid} port={} ver={ver}（{runner_desc}）", cfg.port));
     ensure_monitor(cfg.clone());
 
-    // 就绪探测线程：HTTP 200 后置 ready（托盘状态行 /「打开界面」使能）；清除阶段提示
+    // 就绪探测线程：HTTP 200 后置 ready（托盘状态行 /「打开界面」使能）；清除阶段提示。
     let p = cfg.port;
-    let timeout = cfg.startup_timeout_secs;
+    let startup_timeout = cfg.startup_timeout_secs;
     std::thread::spawn(move || {
-        wait_ready(p, timeout);
+        let deadline = std::time::Instant::now() + Duration::from_secs(startup_timeout);
+        let mut ready_ok = false;
+        while std::time::Instant::now() < deadline {
+            if health_ok(p, 1000) {
+                ready_ok = true;
+                break;
+            }
+            heartbeat_if_silent(); // 首次安装/下载静默时给日志注入「还在干活」心跳
+            std::thread::sleep(Duration::from_millis(500));
+        }
         if let Ok(mut st) = state().lock() {
-            st.status.ready = true;
+            // 只有真的探测到 HTTP 200 才置 ready；超时则保持 ready=false，
+            // 让向导的 Starting→超时失败分支有机会触发，向导会显示「未就绪」并给重试按钮
+            if ready_ok {
+                st.status.ready = true;
+            }
+            // 超时：清 stage（否则一直显示「启动中…」像卡住），
+            // 但不记 last_error（监测线程会根据进程状态决定是否重启）
             st.status.stage.clear();
         }
-        let msg = if http_ok(p, 1000) {
+        let msg = if ready_ok {
             format!("界面就绪: http://127.0.0.1:{p}")
         } else {
-            format!("启动超时（{timeout}s 内未见 HTTP 200），端口 {p}")
+            format!("启动超时（{startup_timeout}s 内未见 HTTP 200），端口 {p} — 向导将显示失败并重试")
         };
         append_log(&msg);
     });
@@ -325,8 +455,13 @@ pub fn stop() -> Result<(), String> {
     Ok(())
 }
 
-/// 杀进程树：taskkill /T 杀整棵树（node → 子进程），child.kill() 只杀直接子进程不够
+/// 杀进程树：无论 owned 与否统一真正关闭（2026-08-19 用户要求「关闭引擎不区分内外」）。
+/// 注意：外部认领的 dsh **不在 Job Object 内**，terminate_job 对空作业返回成功却杀不到——
+/// 所以 Job 强杀（壳 spawn 整树，最可靠）与 taskkill 兜底（外部认领进程）**都执行**。
 fn kill_child(st: &mut SuperState) {
+    // 1) Job Object 强杀整树（覆盖壳 spawn 的 dsh：cmd→dsh.cmd→node 孙进程，不漏杀）
+    let _ = crate::job::terminate_job();
+    // 2) 对当前 pid 兜底 taskkill（覆盖外部认领的 dsh——不在 job 内；对 job 内已死进程无副作用）
     if let Some(pid) = st.status.pid {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
@@ -338,16 +473,59 @@ fn kill_child(st: &mut SuperState) {
     }
 }
 
-/// 重启（stop + start）。当前托盘菜单无重启项，v2（更新后重启）使用。
-#[allow(dead_code)]
-pub fn restart(cfg: &AppConfig, ver: &str) -> Result<(), String> {
+/// 重启（stop + start）。托盘「重启引擎」菜单使用。
+pub fn restart(cfg: &AppConfig) -> Result<(), String> {
     stop()?;
-    start(cfg, ver)
+    start(cfg)
 }
 
 /// 退出清理（main 退出钩子）：关自动重启 + 杀进程（防残留 Node 占端口）
 pub fn shutdown() {
     let _ = stop();
+}
+
+// ---------- 状态持久化（供 CLI `status` 跨进程读取） ----------
+
+/// 持久化当前状态到 state.json（监测线程每轮调用）。失败静默（不影响守护）。
+pub fn write_state() {
+    let st = status();
+    if let Ok(s) = serde_json::to_string_pretty(&st) {
+        let p = runtime::state_path();
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&p, s);
+    }
+}
+
+/// 读取 state.json（CLI `status` 用）；缺失/异常返回「暂不可用」占位 JSON。
+pub fn read_state_json() -> String {
+    let p = runtime::state_path();
+    match std::fs::read_to_string(&p) {
+        Ok(s) => s,
+        Err(_) => "{\"running\":false,\"message\":\"状态文件暂不可用（守护刚启动？）\"}".to_string(),
+    }
+}
+
+/// 发送停止请求：写 control.json（CLI `stop` 用）；监测线程下一轮消费。
+pub fn request_stop() {
+    let p = runtime::control_path();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(&p, "{\"stop\":true}");
+    }
+}
+
+/// 监测线程每轮调用：若收到停止请求则停掉 dsh（auto_restart=false，防重启）并清请求。
+/// 不持锁调用（内部 stop() 自行加锁）。返回是否处理了停止请求。
+pub fn consume_stop_request() -> bool {
+    let p = runtime::control_path();
+    if !p.is_file() {
+        return false;
+    }
+    let _ = std::fs::remove_file(&p);
+    let _ = stop();
+    true
 }
 
 // ---------- 监测线程（退避重启） ----------
@@ -361,9 +539,13 @@ fn ensure_monitor(cfg: AppConfig) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(1));
+            // 消费停止请求（CLI `stop` 写 control.json）：不持锁，内部 stop() 自行加锁
+            let _ = consume_stop_request();
+            // 锁中毒恢复：上一轮若 panic 遗留 PoisonError，into_inner 取回守卫继续守护，
+            // 而不是 silently `continue` 让监控永久失明。
             let mut st = match state().lock() {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => e.into_inner(),
             };
             let exit = st
                 .child
@@ -384,33 +566,162 @@ fn ensure_monitor(cfg: AppConfig) {
                             st.status.restarts += 1;
                             let n = st.status.restarts;
                             let delay = backoff_delay(n, cfg.backoff_max_secs);
-                            let ver = st.status.version.clone().unwrap_or_default();
-                            drop(st); // 释放锁再 start（start 会重新锁）
-                            append_log(&format!("自动重启（{n}/{max}），退避 {delay}s"));
-                            std::thread::sleep(Duration::from_secs(delay));
-                            if let Err(e) = start(&cfg, &ver) {
-                                append_log(&format!("重启失败: {e}"));
+                            // 崩溃自愈：按重启次数升级诊疗模式（处置→主治→急救），
+                            // 把「先检测→推荐执行→兜底急救」落到每次重启前。
+                            let mode = crate::doctor::Mode::for_restart(n);
+                            let cfg2 = cfg.clone();
+                            let label = format!(
+                                "自动重启（{n}/{max}），退避 {delay}s；重启前跑诊疗（模式={}）",
+                                mode.label()
+                            );
+                            drop(st); // 释放锁再 heal/start（二者会重新锁）
+                            append_log(&label);
+                            if n == 1 {
+                                crate::notify::toast("DSH 伴侣", "引擎已崩溃，正在自动重启…");
+                            }
+                            // catch_unwind：heal/start 万一 panic，监控线程不能静默死掉——
+                            // 捕获后继续守护（这是「守护本身有守护」的最后一道）。
+                            let bad = panic::catch_unwind(AssertUnwindSafe(|| {
+                                crate::doctor::heal(&cfg2, mode);
+                                std::thread::sleep(Duration::from_secs(delay));
+                                if let Err(e) = start(&cfg2) {
+                                    append_log(&format!("重启失败: {e}"));
+                                }
+                            }));
+                            if bad.is_err() {
+                                append_log("⚠️ 监测线程自动重启时 panic，已捕获并继续守护（避免守护静默失效）");
+                            }
+                            continue;
+                        } else if !st.emergency_used {
+                            // 崩溃上限耗尽：跑一次「急救」兜底（最后手段），再试最后一次
+                            st.emergency_used = true;
+                            let cfg2 = cfg.clone();
+                            let em_delay = backoff_delay(max, cfg.backoff_max_secs);
+                            drop(st);
+                            append_log(&format!(
+                                "连续崩溃达上限，启动急救兜底（doctor::Emergency）后做最后一次尝试"
+                            ));
+                            let bad = panic::catch_unwind(AssertUnwindSafe(|| {
+                                crate::doctor::heal(&cfg2, crate::doctor::Mode::Emergency);
+                                std::thread::sleep(Duration::from_secs(em_delay));
+                                if let Err(e) = start(&cfg2) {
+                                    append_log(&format!("急救后仍失败: {e}"));
+                                }
+                            }));
+                            if bad.is_err() {
+                                append_log("⚠️ 监测线程急救兜底时 panic，已捕获并继续守护");
+                            }
+                            // 重新取锁，标记放弃（锁中毒则恢复继续）
+                            if let Ok(mut s2) = state().lock() {
+                                let n = s2.status.restarts;
+                                let m = format!("连续崩溃 {n} 次，急救兜底后仍失败（详见 engine.log）");
+                                s2.status.last_error = Some(m.clone());
+                                append_log(&m);
                             }
                             continue;
                         } else {
                             let n = st.status.restarts;
-                            let msg = format!("连续崩溃 {n} 次，已停止自动重启（详见 engine.log）");
+                            let msg = format!("连续崩溃 {n} 次，急救兜底后仍失败，已停止自动重启（详见 engine.log）");
                             st.status.last_error = Some(msg.clone());
                             append_log(&msg);
+                            crate::notify::toast("DSH 伴侣", &format!("引擎连续崩溃 {n} 次，已停止自动重启"));
                         }
                     } else {
                         st.status.last_error = None; // 手动 stop，正常
                     }
                 }
                 None => {
-                    // 子进程存活：连续运行超健康期 → 重启预算清零（避免一次健康运行前的旧崩溃计数累加）
-                    if st.status.restarts > 0 && st.last_start.elapsed() > Duration::from_secs(HEALTHY_RESET_SECS) {
-                        st.status.restarts = 0;
-                        st.status.last_error = None;
-                        append_log("连续运行超健康期，重启预算已清零");
+                    if !st.status.owned && st.status.running {
+                        // 认领的外部 dsh（无 child 句柄，try_wait 恒 None）：周期探活。
+                        // 判定死亡 → 状态降级为已停止（不自动重启——外部进程不归本壳管；
+                        // 用户可手动「重启引擎」，start() 的 spawn 分支会自起 owned 实例）。
+                        if st.last_adopt_probe.elapsed() >= Duration::from_secs(ADOPT_PROBE_INTERVAL_SECS) {
+                            st.last_adopt_probe = std::time::Instant::now();
+                            let port_ok = health_ok(st.status.port, 1000);
+                            let claimed = st.status.pid.unwrap_or(0);
+                            let listener = crate::doctor::listening_pid_on_port(st.status.port);
+                            let (misses, verdict) = adopt_probe(st.adopt_misses, port_ok, listener, claimed);
+                            st.adopt_misses = misses;
+                            match verdict {
+                                AdoptProbe::Alive => {}
+                                AdoptProbe::UpdatePid => {
+                                    st.status.pid = listener;
+                                    append_log(&format!("认领的 dsh 端口换主人（新 pid={listener:?}），已更新认领"));
+                                }
+                                AdoptProbe::Dead => {
+                                    // 外部 dsh 已死：不再只降级——自动接管，spawn 一个 owned 实例，
+                                    // 保证「dsh 一直运行」（命令行 ctrl+C/关窗口 杀掉后壳自起）。
+                                    let dead_pid = st.status.pid.take();
+                                    st.status.running = false;
+                                    st.status.ready = false;
+                                    st.status.last_error = None;
+                                    st.adopt_misses = 0;
+                                    let cfg2 = cfg.clone();
+                                    drop(st); // 释放锁再 kill/spawn（start 会重新锁）
+                                    append_log("认领的外部 dsh 已退出，由本壳接管：自动重启引擎");
+                                    crate::notify::toast("DSH 伴侣", "外部 dsh 已退出，已自动接管并重启");
+                                    if let Some(pid) = dead_pid {
+                                        kill_tree(pid); // 原进程若残留（UI 卡但进程还在）→ 清掉防占端口
+                                    }
+                                    let bad = panic::catch_unwind(AssertUnwindSafe(|| {
+                                        if let Err(e) = start(&cfg2) {
+                                            append_log(&format!("接管重启失败: {e}"));
+                                        }
+                                    }));
+                                    if bad.is_err() {
+                                        append_log("⚠️ 接管重启时 panic，已捕获并继续守护");
+                                    }
+                                    continue; // st 已在上面 drop，直接进入下一轮（避免末尾再借 st）
+                                }
+                            }
+                        }
+                    } else if st.status.owned && st.status.ready && st.status.running {
+                        // 自有引擎页面级守护：已就绪才探测（启动期不探，避免误杀冷启动/重启中的引擎）。
+                        // 三段式：首次失败提示（托盘状态行「界面无响应」）→ 连续失败累积 →
+                        // 判死杀进程树，让下一轮 try_wait 看到退出 → 走既有「崩溃→退避重启+诊疗升级」链路。
+                        if st.last_page_probe.elapsed() >= Duration::from_secs(PAGE_PROBE_INTERVAL_SECS) {
+                            st.last_page_probe = std::time::Instant::now();
+                            let port_ok = health_ok(st.status.port, 1000);
+                            let (misses, verdict) = page_probe(st.page_misses, port_ok);
+                            st.page_misses = misses;
+                            match verdict {
+                                PageProbe::Alive => {
+                                    if st.page_misses == 0 && !st.status.stage.is_empty() {
+                                        st.status.stage.clear(); // 界面恢复，清掉无响应提示
+                                    }
+                                }
+                                PageProbe::Degraded => {
+                                    set_stage(&format!("界面无响应…（{} 次探测失败）", st.page_misses));
+                                    append_log(&format!(
+                                        "页面探活失败 {}/{}：http://127.0.0.1:{}/ 不响应",
+                                        st.page_misses, PAGE_PROBE_MISS_LIMIT, st.status.port
+                                    ));
+                                }
+                                PageProbe::Dead => {
+                                    append_log("页面探活连续失败，判定界面无响应，杀进程走重启链路");
+                                    // 自有引擎在作业内 → 优先 terminate_job；作业不可用降级 taskkill
+                                    if !crate::job::terminate_job() {
+                                        if let Some(pid) = st.status.pid {
+                                            kill_tree(pid);
+                                        }
+                                    }
+                                    st.page_misses = 0; // 下一轮 try_wait 走崩溃链路，重置本计数
+                                }
+                            }
+                        }
+                    } else {
+                        // 子进程存活：连续运行超健康期 → 重启预算清零（避免一次健康运行前的旧崩溃计数累加）
+                        if st.status.restarts > 0 && st.last_start.elapsed() > Duration::from_secs(HEALTHY_RESET_SECS) {
+                            st.status.restarts = 0;
+                            st.status.last_error = None;
+                            append_log("连续运行超健康期，重启预算已清零");
+                        }
                     }
                 }
             }
+            // 持久化状态快照（CLI `status` 跨进程读取）；st 已无需，先释放锁再写
+            drop(st);
+            write_state();
         }
     });
 }
@@ -421,39 +732,76 @@ fn backoff_delay(restart_n: u32, max_secs: u64) -> u64 {
     exp.min(max_secs.max(1))
 }
 
+/// 认领探活判定（纯函数，可测）：一次探活输入 → (新失败计数, 判定)。
+/// - HTTP 200 → 存活，失败计数清零
+/// - 端口仍被原 pid 监听但 HTTP 不 200 → 可能只是 UI 卡，失败 +1；连续超限判死
+/// - 端口被别的 pid 监听 → 换主人，更新认领目标（计数清零）
+/// - 端口无人监听 → 失败 +1；连续超限判死
+fn adopt_probe(
+    misses: u32,
+    port_ok: bool,
+    listener: Option<u32>,
+    claimed_pid: u32,
+) -> (u32, AdoptProbe) {
+    if port_ok {
+        return (0, AdoptProbe::Alive);
+    }
+    let miss = misses + 1;
+    let dead = miss >= ADOPT_PROBE_MISS_LIMIT;
+    match listener {
+        Some(p) if p == claimed_pid => (miss, if dead { AdoptProbe::Dead } else { AdoptProbe::Alive }),
+        Some(_) => (0, AdoptProbe::UpdatePid),
+        None => (miss, if dead { AdoptProbe::Dead } else { AdoptProbe::Alive }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdoptProbe {
+    /// 外部 dsh 仍健康，保持认领
+    Alive,
+    /// 端口换主人（pid 变了），更新认领目标
+    UpdatePid,
+    /// 判定外部 dsh 已死，解除认领（状态降级）
+    Dead,
+}
+
+/// 页面探活判定（纯函数，可测）：一次 HTTP 探测 → (新失败计数, 判定)。
+/// 三段式：200 → 存活清零；连续失败累积（提示阶段，不动作）；超限 → 判死（杀进程走重启链路）。
+fn page_probe(misses: u32, port_ok: bool) -> (u32, PageProbe) {
+    if port_ok {
+        return (0, PageProbe::Alive);
+    }
+    let miss = misses + 1;
+    if miss >= PAGE_PROBE_MISS_LIMIT {
+        (miss, PageProbe::Dead)
+    } else {
+        (miss, PageProbe::Degraded)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageProbe {
+    /// HTTP 恢复 200：存活，清无响应提示
+    Alive,
+    /// 无响应但未判死：托盘状态行提示（不动作）
+    Degraded,
+    /// 连续失败超限：判界面无响应，杀进程走既有崩溃重启链路
+    Dead,
+}
+
+/// 仅 taskkill 进程树（不摘 child 句柄、不改状态）——页面探活判死用：
+/// 杀掉后下一轮 monitor `try_wait` 看到退出码 → 走既有「崩溃 → 退避重启 + 诊疗升级」链路，
+/// restarts 预算与 doctor 自动生效，无需复制重启逻辑。
+fn kill_tree(pid: u32) {
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
+    hide_window(&mut cmd);
+    let _ = cmd.status();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn npx_argv_pins_version_and_passes_port() {
-        let argv = npx_argv("0.1.0-rc.6", "127.0.0.1", 3080, None);
-        assert_eq!(
-            argv,
-            vec![
-                "--yes",
-                "@deepseek-ai/dsh@0.1.0-rc.6",
-                "web",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "3080",
-            ]
-        );
-        // 版本号被钉死（不追 latest），这是「监控渠道」与「盲目 latest」的区别
-        assert!(argv.iter().any(|a| a == "@deepseek-ai/dsh@0.1.0-rc.6"));
-    }
-
-    #[test]
-    fn npx_argv_injects_patch_overlay_when_present() {
-        let argv = npx_argv("0.1.0-rc.6", "127.0.0.1", 3080, Some(std::path::Path::new(r"C:\home\come.patch.yml")));
-        assert_eq!(argv[2], "--patch", "壳 patch overlay 应经 --patch 传入（dsh CLI 顶层选项）");
-        assert_eq!(argv[3], r"C:\home\come.patch.yml");
-        assert!(argv.windows(2).any(|w| w == ["web", "--host"]), "--patch 在 web 参数之前");
-        // patch 参数不影响其余契约参数
-        assert!(argv.iter().any(|a| a == "--port"));
-        assert!(argv.iter().any(|a| a == "3080"));
-    }
 
     #[test]
     fn backoff_sequence_capped() {
@@ -466,5 +814,43 @@ mod tests {
         assert_eq!(backoff_delay(100, 30), 30);
         // 至少 1s
         assert_eq!(backoff_delay(1, 0), 1);
+    }
+
+    #[test]
+    fn fmt_elapsed_readable() {
+        assert_eq!(fmt_elapsed(0), "0 秒");
+        assert_eq!(fmt_elapsed(45), "45 秒");
+        assert_eq!(fmt_elapsed(84), "1 分 24 秒");
+        assert_eq!(fmt_elapsed(723), "12 分 3 秒");
+    }
+
+    #[test]
+    fn adopt_probe_verdicts() {
+        // HTTP 正常 → 存活，失败计数清零
+        assert_eq!(adopt_probe(2, true, None, 100), (0, AdoptProbe::Alive));
+        assert_eq!(adopt_probe(2, true, Some(100), 100), (0, AdoptProbe::Alive));
+        // 端口换主人 → UpdatePid，计数清零
+        assert_eq!(adopt_probe(1, false, Some(200), 100), (0, AdoptProbe::UpdatePid));
+        // 原 pid 还在但 HTTP 不 200 → 累积；超限判死
+        assert_eq!(adopt_probe(0, false, Some(100), 100), (1, AdoptProbe::Alive));
+        assert_eq!(adopt_probe(2, false, Some(100), 100), (3, AdoptProbe::Dead));
+        // 端口无人监听 → 累积；超限判死
+        assert_eq!(adopt_probe(0, false, None, 100), (1, AdoptProbe::Alive));
+        assert_eq!(adopt_probe(2, false, None, 100), (3, AdoptProbe::Dead));
+        // 判定死后再探活恢复 → 计数清零
+        assert_eq!(adopt_probe(3, true, None, 100), (0, AdoptProbe::Alive));
+    }
+
+    #[test]
+    fn page_probe_three_stage() {
+        // 200 → 存活清零
+        assert_eq!(page_probe(2, true), (0, PageProbe::Alive));
+        // 失败累积：前两次 Degraded（提示，不动作）
+        assert_eq!(page_probe(0, false), (1, PageProbe::Degraded));
+        assert_eq!(page_probe(1, false), (2, PageProbe::Degraded));
+        // 第三次超限 → Dead（杀进程走重启链路）
+        assert_eq!(page_probe(2, false), (3, PageProbe::Dead));
+        // 判死后计数保持在超限值；恢复后清零
+        assert_eq!(page_probe(3, true), (0, PageProbe::Alive));
     }
 }

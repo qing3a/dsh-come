@@ -1,4 +1,5 @@
 /target
+/target2
 dist/
 *.exe
 *.log
@@ -10,3 +11,5 @@ node_modules/
 /kb/
 # 会话工具目录（zcode plans 快照，勿提交）
 .zcode/
+# WorkBuddy 工作区数据（记忆/会话日志，本地私有，勿提交）
+.workbuddy/

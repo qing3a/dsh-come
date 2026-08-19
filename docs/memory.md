@@ -3,9 +3,61 @@
 > 本文档是本项目长期记忆：记录方向决策、参考项目、技术选型与踩坑。
 > 改动方向前先读这里；新增决策按时间追加，保留历史不删改。
 
-状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **定名 dsh-come（2026-08-16）**：dsh-desktop → dsh-companion → dsh-come 两次更名，均在公开引用前完成；运行时数据路径不变（见 §0.6）。
+状态：✅ v1 定稿（启动器/伴侣）· 🚀 方向 v2 定案（2026-08-14）：**基座切官方仓库 + 猎头工作台（dsh 插件模式）+ 托盘参考 md-agent** · 🚀 方向 v3 定案（2026-08-16）：**只做 dsh-desktop，md-agent 功能插件化移植进 dsh 生态**（见第 0 节）· 🔄 **定名 dsh-come（2026-08-16）**：dsh-desktop → dsh-companion → dsh-come 两次更名，均在公开引用前完成；运行时数据路径不变（见 §0.6）· 🔄 **瘦身定案（2026-08-17/18）**：越做越薄，壳只做托盘 + 进程守护 + 极简启停（见 §0.10）· 🔄 **自愈诊疗定案（2026-08-18）**：守护升级为证据驱动自愈 doctor.rs（见 §0.11）。
 
-## 0.8 插件市场策略：dsh-market 协作（2026-08-17）
+## 0.11 自愈诊疗（doctor.rs，2026-08-18）
+
+守护职责从「崩溃就重启」升级为**证据驱动自愈**：扫描取证 → 推理分级 → 按模式授权处置 → 兜底升级。
+新增 `src/doctor.rs`（873 行，9 单测；加固后 15 测试全绿）。
+
+- **不写死检查**（用户硬要求）：所有「发现」来自实际扫描——孤儿 file:// 插件入口 / 损坏或不可读的
+  cordis.patch.yml / 残缺下载（.tmp/.partial/.crdownload/_downloads）/ 端口被占 / 孤儿进程。将来是别的
+  插件、别的原因拖垮 dsh，只要留下同类证据就能识别。
+- **影响半径分级**：🟢绿=可逆零风险可自动（重建壳自有 come.patch.yml）/ 🟡黄=主治及以上自动（结束占
+  端口进程、删孤儿配置条目、清残缺下载）/ 🔴红=仅急救且先备份（重置损坏的 profile patch）。
+- **模式阶梯**（规避「严苛」字眼）：巡检 Inspect（只报不改）/ 处置 Treat（自动绿）/ 主治 Attend（自动
+  绿+黄）/ 急救 Emergency（全量，红先备份）。失败逐级升级：巡检→处置→主治→急救→急救。
+- **接入点**：`main::run_first_boot(cfg, mode)` 首次启动默认处置；`wizard` 重试逐级升级（处置→主治→急救，
+  2026-08-18 加 no-runner 即停 + 重试上限 3 次防刷日志）；`supervisor` 每次崩溃按次数升级（1→处置/2→主治/
+  ≥3→急救），上限耗尽跑一次 Emergency 兜底（`emergency_used` 防无限循环）再放弃；CLI `dsh-come doctor
+  [--mode X]` 手动跑报告/修复。
+- **路径定位原则**（用户硬要求：不写死绝对地址）：`profile_patch_path()` 先约定路径、不在则递归扫描
+  （`scan_named` 深度 6）、再扫启动器根；残缺下载扫「dsh 数据根 + 启动器根」两处去重。
+- **2026-08-18 加固（本次会话）**：
+  1. **wmic → PowerShell**：`ps_table()` 用 `Get-CimInstance Win32_Process` 一次取全进程表（pid/ppid/name/
+     cmdline）。wmic 在 Win11 24H2+ 已弃用，新机器无此命令会静默失效；PowerShell 5.1 全系可用。
+  2. **防误杀活引擎**：`engine_tree_pids()` 从 supervisor 当前引擎 pid 收集整棵子树（纯函数
+     `collect_subtree` 可测），孤儿检测/急救一律排除——CLI 跑 `doctor --mode emergency` 时不会再杀掉
+     正在运行的引擎或其他终端的 dsh。
+  3. **孤儿进程分级**：命令行含本端口（上次崩溃残留）→ 🟡黄主治自动；仅名字像 dsh、无端口证据（可能
+     是用户另开的实例）→ 🔴红仅急救自动。
+  4. **契约声明**：cli-contract.md 加「自愈诊疗例外」——doctor 是「壳不碰 dsh 数据」的唯一例外，只做
+     文件系统级自愈、修改先备份、不解析业务数据。
+  5. **认领机制收敛（用户拍板保留并完整修复）**：端口已有健康 dsh → 接管（owned=false，stop/重启/退出
+     不杀外部进程）；monitor 对 adopted 周期探活（`adopt_probe` 纯函数：5s 节流、连续 3 次判死、端口换
+     主人自动更新认领）——修掉「外部 dsh 死亡后状态卡运行中」回归（认领时无 child 句柄，原 monitor
+     从不探活）；spawn 分支复位 `owned=true`——修掉「认领后手动重启 → 新实例退出时因 owned=false 不杀
+     → 残留进程」衍生 bug；doctor `probe_port` 与认领协调：健康占用者 → 接管提示 🟢 不杀、僵尸占用
+     （HTTP 不 200）→ 按分级杀 🟡；wizard 就绪超时计失败并 stop+升级重试（修「起了但不就绪不触发升级」
+     死逻辑），阶梯统一 `Mode::for_restart`；`doctor_mode` 配置接入 run_first_boot（删死旋钮）删
+     `from_config` 死函数；删 window_pos/size 死字段；单实例 named mutex 锁（防双托盘双监测）；
+     日志轮转先删旧 .log.1；npx 无 pin 时版本显示 `npx@latest`（不再误标「系统 dsh」）；config::save
+     失败写 engine.log。验证：cargo test 16 全绿。
+
+## 0.10 瘦身定案：越做越薄（2026-08-17 执行，2026-08-18 修复收尾）
+
+用户拍板：**dsh-come 只做「托盘 + 进程守护 + 极简启停」**（方案全文见 `docs/slimming-plan.md`，已执行）；
+任何功能先问「dsh 或其插件生态有没有」——有就不自己做。9 文件 2,837 行 → 6 文件 1,236 行（-56%）。
+
+- **删除 4 文件**：`plugins.rs`（市场，归 dsh-market 插件）/ `version.rs`（rc.7 pin 审计，临时问题）/ `status_page.rs`（dsh web UI 已有状态）/ `updater.rs`（registry 检查+冒烟+切换回滚，归 npm）——**updater.rs 在 slimming-plan 里漏列，2026-08-18 补记**。
+- **托盘精简**：852→261 行，菜单 10+→5 项（状态行/打开界面/重启引擎/打开日志目录/退出）；移除插件市场/工作台/清空数据/状态页等子菜单。
+- **wizard.rs**：317→53 行，移除 tiny_http 向导页与内嵌 HTML，降级为「检测→启动→打开浏览器」静默引导。
+- **Cargo.toml 移除依赖**：resvg / winreg / tiny_http（+ dev-dep png）；托盘图标改为代码生成 32x32 RGBA，exe 图标用提交的静态 `resources/icon.ico`。
+- **契约切换（cli-contract v2）**：不设 `DSH_HOME`、不管理版本——系统 `dsh` 直启（回退 npx 通道 + pin rc.6，仅 npx 回退路径锁版本）；come.patch.yml 经 `dsh --patch` 挂载（`runtime.rs::ensure_come_patch` 幂等写，仅 dsh-market 禁重启一条）。
+- **被本定案作废的旧决策**：§0.8 市场策略的壳侧部分（托盘市场菜单 / builtin_marketplace / verified-plugins.json 合并）与 §0.9 更新互动策略（静默检查 / state.previous 一键回滚）——见各节 ⚠️ 标注。
+- **2026-08-18 修复收尾（本次会话）**：瘦身留下编译断链——config.rs 引用已删的 `crate::version::DEFAULT_PIN`（内联常量修复）；`examples/gen_icon.rs` 引用已删的 resvg（删除）；随后文档对齐（README 重写为真实行为、DESIGN.md 标注 v1 历史章节、cli-contract/market/integration-plan/根 MEMORY.md 修订）。验证：`cargo test` 5 例全过。
+
+## 0.8 插件市场策略：dsh-market 协作（2026-08-17）——⚠️ 壳侧部分已随瘦身移除（2026-08-18），详见 §0.10
 
 用户拍板：**插件市场改用 [dsh-market](https://github.com/dsh-market/dsh-market)（DSH 可视化插件市场）**；
 工作台相关插件（如猎头协作）将来也会上架到该市场。
@@ -30,7 +82,7 @@
 - **待办**：猎头协作（md-hr）插件化后走 awesome-dsh-plugin PR 进社区目录；壳侧已验证清单随验证引擎
   增量产出时再同步。
 
-## 0.9 更新互动策略（2026-08-17）
+## 0.9 更新互动策略（2026-08-17）——⚠️ 已随瘦身移除（2026-08-18），详见 §0.10
 
 dsh 不定时发版，壳的更新交互补齐两件事（本提交）：
 
@@ -152,6 +204,34 @@ dsh 不定时发版，壳的更新交互补齐两件事（本提交）：
 - `docs/cli-contract.md` —— 壳与 dsh CLI 的契约（C1–C5，upstream 变化时显式升级）
 
 ## 4. 变更记录
+
+- 2026-08-18：**认领判死自动接管（守护语义补全）** —— 用户场景澄清：命令行跑 dsh（ctrl+C/关窗口 杀掉）
+  后 dsh-come 原实现「判死只降级不重启」，无法保证 dsh 一直运行。改为：adopt 判死 → 清残留进程 +
+  spawn owned 实例自动接管（保证一直运行，无论 dsh 怎么起来的）；另修 tray open_browser/open_dir
+  黑框（漏加 hide_window）、删 v1 残留测试锁 DSH_HOME_TEST_LOCK。验证：cargo test 17 全绿、零警告。
+
+- 2026-08-18：**页面级守护（三段式探活）** —— 自有引擎守护从进程级补到页面级：monitor 每 30s 对已就绪
+  owned 引擎 HTTP 探测，三段式（提示→累积→判死）；判死 `kill_tree` 后由下一轮 `try_wait` 走既有崩溃
+  重启链路（restarts 预算/诊疗升级自动生效）；纯函数 `page_probe` + 单测；删 `wipe_data` 死代码
+  （v1 清空数据配套，git 历史可恢复）、`set_stage` 经探活提示重新获得调用方。验证：cargo test 17
+  全绿、编译警告清零。
+
+- 2026-08-18：**认领机制收敛（§0.11.5）** —— 用户拍板保留并完整修复认领机制：adopted 周期探活判死
+  （`adopt_probe` 纯函数 + 单测）、spawn owned 复位、doctor 端口处置与认领协调（健康占用→接管不杀、
+  僵尸占用→分级杀）、wizard 就绪超时 stop+升级重试、doctor_mode 接入、删死字段/死函数、单实例锁、
+  日志轮转删旧、npx 标识、save 失败留日志。验证：cargo test 16 全绿。
+
+- 2026-08-18：**自愈诊疗加固（§0.11）** —— wmic 换 PowerShell 全进程表（Win11 24H2+ 兼容）；孤儿进程
+  排除活引擎树（`engine_tree_pids`）+ 按端口证据分级（防 CLI 急救误杀正在运行的引擎/别的实例）；
+  wizard 引导 no-runner 即停 + 重试上限 3 次（防刷日志）；cli-contract.md 加「自愈诊疗例外」声明。
+  验证：`cargo test` 15 例全过（含新增 collect_subtree / name_matches_dsh 单测）。
+
+- 2026-08-18：**自愈诊疗定案（§0.11）** —— 新增 `src/doctor.rs`（证据驱动：扫描→分级→按模式处置→
+  兜底升级），接入 main（`doctor` CLI 子命令 + 启动前置 heal）/ supervisor（崩溃逐级升级 + 急救兜底）/
+  wizard（重试升级）。用户硬要求：不写死绝对地址（扫描定位 cordis.patch.yml、残缺下载扫两处根）。
+  验证：9 单测全过。
+
+- 2026-08-18：**瘦身定案（§0.10）修复收尾** —— 修瘦身遗留的编译断链（config.rs 内联 `DEFAULT_PIN` 替代已删的 `crate::version`；删除引用已删 resvg 的 `examples/gen_icon.rs` 与 dev-dep png）；文档对齐（README 重写为瘦身后真实行为；DESIGN.md 标注 §3/§4/§5/§6/§7.6/§8 为 v1 历史设计；cli-contract.md 悬空 version.rs 引用改指 config.rs；market.md / integration-plan.md 加瘦身搁置标注；根 MEMORY.md 补 updater.rs 删除记录）。验证：`cargo test` 5 例全过。
 
 - 2026-08-17：**更新互动策略（§0.9）** —— 启动 10s 延迟静默检查更新（发现新版本+验证通过 → 菜单
   「应用更新」+ 状态行 ⚑，用户确认才切换；离线/失败静默）；state.json 新增 `previous` 字段 + 托盘

@@ -174,7 +174,7 @@ export function apply(ctx: Context) {
 ## 10. 对猎头工作台的落地建议
 
 - **拆分插件**：按能力边界拆成多个插件（如 `recruit-tools` 业务工具、`recruit-config` 配置与 schema、`recruit-services` 公共服务），每个插件职责单一、依赖声明清晰，便于 HMR 迭代与按需装/卸。
-- **开发期**：cordis.yml overlay + `dsh web --patch`（决策 1 的壳已用 npx 通道起 web，加 `--patch` 指向本地插件目录即可）。
+- **开发期**：cordis.yml overlay + `dsh web --patch`（决策 1 的壳已用系统 dsh 起 web，加 `--patch` 指向本地插件目录即可）。
 - **发布期**：打成安装包，进壳的「插件市场」（内置 ✓已验证 清单）一键装/卸。
 - **业务规则**：猎头工作台的数据模型与规则以 `docs/memory.md` 决策 2 为准（继承 md-agent headhunter 模板的隔离/隐私/保密/不编造规则）。
 
@@ -184,7 +184,7 @@ export function apply(ctx: Context) {
 本机（Windows + dsh 0.1.0-rc.6）已验证可加载。
 
 ```powershell
-# 冒烟验证过的加载命令（隔离 home 起在临时端口；生产用壳的 npx 通道 + --patch）
+# 冒烟验证过的加载命令（隔离 home 起在临时端口；生产用壳的系统 dsh + --patch）
 $env:DSH_HOME = '<临时隔离目录>\home'
 dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/recruit-tools/cordis.yml --host 127.0.0.1 --port 3199
 ```

@@ -2,38 +2,35 @@
 name = "dsh-come"
 version = "0.1.0"
 edition = "2021"
-description = "DSH 伴侣：把 DeepSeek Harness 变成双击即用的 Windows 桌面 App（捆绑 Node + 钉版安装 + 验证式自动更新 + 崩溃自愈）"
+description = "DSH 伴侣：把系统 dsh 变成双击即用的 Windows 桌面 App（直启系统 dsh + 崩溃自愈 + 托盘）"
 license = "MIT"
 
 [dependencies]
-# 系统托盘（exe 宿主已由 tray-icon 内部处理；与 md-agent 相同版本组合，Windows 已验证可编译）
+# 系统托盘
 tray-icon = "0.24"
 winit = "0.30"
-# 配置 / state.json
+# 配置 config.json
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 日志时间戳
 chrono = "0.4"
-# updater：npm registry 查询 + 冒烟健康探测（blocking；rustls，无 openssl）
+# HTTP：引擎就绪探测
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-# Node 自举安装：解压官方 portable zip（纯 Rust，无系统依赖）
-zip = "0.6"
-# 托盘图标：官方 favicon.svg 光栅化（纯 Rust；tiny-skia 后端内置，关掉图像/字体/系统字体等不需要的特性）
-resvg = { version = "0.44", default-features = false }
-# 托盘图标颜色跟随系统主题（浅色任务栏用黑 logo、深色用白 logo）
-winreg = "0.52"
-# 首次向导：本地 HTTP 服务（向导页轮询安装状态；reqwest 只发请求不监听，缺服务端）
-tiny_http = "0.12"
-# 窗口几何记录：枚举浏览器 --app 窗口取矩形（EnumWindows 系 Win32；winreg 已拉 windows-sys，版本对齐 0.59）
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi"] }
+# 桌面通知（崩溃/重启/达上限弹窗；失败静默降级，不阻塞守护）
+notify-rust = "4"
+# Ctrl+C 优雅退出（--no-tray / 托盘降级无头模式）
+ctrlc = "3"
+
+[target.'cfg(windows)'.dependencies]
+# 单实例锁（named mutex）+ 注册表 PATH 读取（installer 探测）
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Registry"] }
 
 [build-dependencies]
 # 把 resources/icon.ico 嵌入 exe（资源管理器/任务栏图标）
 embed-resource = "3"
 
 [dev-dependencies]
-# 一次性生成 icon.ico 用（examples/gen_icon.rs；不进入主 exe 依赖图）
-png = "0.17"
+# （已无 dev 工具；icon.ico 是提交的静态资产，由 build.rs 嵌入 exe）
 
 [profile.release]
 strip = true

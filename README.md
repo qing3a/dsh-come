@@ -1,16 +1,40 @@
 # dsh-come｜DSH 伴侣
 
-把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**双击即用的 Windows 桌面 App**——无需安装 Node、无需打开终端，首次运行自动完成一切。
+把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的 Windows 桌面壳**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。
 
-> **面向谁**：想本地跑 DeepSeek agent，但被「装 Node + 敲命令行」劝退的人。开发者直接用官方 `npx @deepseek-ai/dsh web` 即可，本项目的价值在降低入门门槛。
+> **面向谁**：已经装了 `dsh`（或 Node.js）的人，想要一个常驻托盘、双击即启动、挂了自动拉起的桌面入口。缺失时管理页/向导会自动安装（node 用 winget、dsh 用 `npm install -g`，不走 npx 临时拉取）。开发者直接用官方 `npx @deepseek-ai/dsh web` 亦可，本项目的价值是把引擎守护和桌面体验包起来。
 
-> 🚀 **方向 v3（2026-08-16）**：只做 dsh-come，md-agent 的功能以 **dsh 官方插件形态**移植进本生态（猎头工作台 = `plugins/recruit-workbench` + `recruit-tools`）；Rust 壳专注托盘/守护/更新/市场。决策记忆见 `docs/memory.md`，插件模式速查见 `docs/dsh-plugin-guide.md`，市场收录见 `docs/market.md`。
+> 🚀 **当前方向（2026-08-17 定案）**：**越做越薄**——壳只做托盘 + 进程守护 + 极简启停（详见 `docs/slimming-plan.md`）。不做插件市场（归 [dsh-market](https://github.com/dsh-market/dsh-market) 插件）、不做版本管理（跟随系统 dsh）、不做状态页/向导页（dsh web UI 已有）。三层集成方案（md-agent 协作）见 `docs/integration-plan.md`。
 
-## 三个卖点
+## 它做什么
 
-- **双击即用**：下载即得，无需 Node/终端；首次运行自动下载 Node、安装 DSH、打开界面
-- **更新稳妥**：DSH 目前迭代较快、兼容性会变——新版本先**冒烟验证**（临时端口 HTTP 200）再锁定切换，失败自动保留旧版；启动后静默检查新版本（菜单「应用更新」确认才生效），升级后随时**一键回滚**
-- **工作台市场**：**工作台优先**（场景完整的业务包，如猎头协作，点开即用）+ **插件市场**（一键安装 [dsh-market](https://github.com/dsh-market/dsh-market)：Settings → Plugin Market 浏览/搜索/安装 800+ 社区插件，不碰终端）
+```
+dsh-come.exe（Rust 单 exe，进程外 supervisor）
+├── 进程守护   spawn `dsh web`（PATH 直启系统 dsh；崩溃自动重启（指数退避+健康期清零）；滚动日志
+├── 自愈诊疗   doctor：扫描取证→分级→按模式处置→兜底升级（崩溃时逐级升级到急救）
+├── 安装引导   缺失即正常安装（不走 npx 临时拉取）：node 缺失→winget 装 LTS；dsh 缺失→npm install -g
+├── 托盘       打开界面（置顶）/ 状态行 / 重启引擎 / 关闭引擎 / 打开日志目录 / 退出
+├── 管理页      http://127.0.0.1:3081：状态展示 + 安装 Node/dsh + 启动/关闭
+└── patch      come.patch.yml 经 `dsh --patch` 挂载，禁用 dsh-market 的 detached 重启
+```
+
+系统托盘菜单（每 3 秒刷新状态）：**打开界面**（置顶）、状态行（`运行中 ✓ http://127.0.0.1:3080` 或
+阶段提示）、**重启引擎**、**关闭引擎**（不区分是否本壳启动，真正关闭、省内存）、打开日志目录、
+退出。引擎就绪后自动打开浏览器；未检测到 dsh/Node 时自动安装（或到管理页
+`http://127.0.0.1:3081` 手动安装与启停）。
+
+## 自愈诊疗（doctor）
+
+证据驱动的自愈系统，**不写死检查**——所有「发现」来自对环境的实际扫描（孤儿 file:// 插件入口 /
+损坏的 cordis.patch.yml / 残缺下载 / 端口被占 / 孤儿进程），将来是别的原因拖垮 dsh 也能识别。
+
+- **模式阶梯**（失败逐级升级）：巡检 Inspect（只报不改）→ 处置 Treat（自动 🟢绿，🟡黄/🔴红只推荐）→
+  主治 Attend（自动 🟢绿+🟡黄，🔴红只推荐）→ 急救 Emergency（全量，🔴红先备份再动）
+- **接入**：首次启动跑「处置」；引擎反复崩溃时每次重启前逐级升级（处置→主治→急救），上限耗尽跑一次
+  急救兜底再放弃
+- **手动**：`dsh-come doctor`（默认巡检，只打印报告）/ `dsh-come doctor --mode attend`（执行修复）
+- **安全边界**：所有修改先备份 `.bak`；进程处置排除当前运行的引擎；无端口证据的疑似 dsh 进程仅急救
+  自动（防误杀你另开的实例）
 
 ## 快速开始
 
@@ -20,30 +44,25 @@ cd dsh-come
 cargo run --release
 ```
 
-首次运行自动完成：下载 portable Node（约 30MB）→ npx 安装 DSH → 启动 Web UI → **自动弹出独立窗口**（无地址栏，看起来就是桌面 App）。
+**前置**：Windows 10/11（Node.js 缺失时自动用 winget 安装 LTS；dsh 缺失时自动 `npm install -g
+@deepseek-ai/dsh`——均可在管理页 `http://127.0.0.1:3081` 手动操作与查看进度）。
 
-之后：托盘图标常驻（官方 DSH logo），右键可打开界面 / 插件市场 / 检查更新 / 重启引擎 / 开机自启 / 退出。
-
-## 它做什么
-
-```
-dsh-come.exe（Rust 单 exe，进程外 supervisor）
-├── 自举安装   portable Node（官方源 + npmmirror 镜像兜底，纯 Rust 解压）
-├── 引擎守护   spawn dsh web；崩溃自动重启（指数退避 + 健康期重置上限）；滚动日志
-├── 版本管理   registry 检查 → 冒烟验证（临时端口 HTTP 200）→ 切换/回滚（known_bad）
-├── 市场      插件市场 dsh-market（托盘一键安装/打开 → Settings → Plugin Market）+ 工作台
-│             分组（场景完整业务包，点开即用）；内置清单兜底 + 远程清单合并
-└── 托盘      官方 logo（浅/深色主题自适应）/ 自动开界面 / 开机自启（HKCU Run）
-```
-
-### 关键设计
+## 关键设计
 
 | 决策 | 理由 |
 |---|---|
-| **npx 通道**（`npx @deepseek-ai/dsh@<ver>`） | 下载/缓存/解析交给 npm 生态，壳只维护一个版本号；`--yes` + 钉版号，不直接跟 latest |
-| **验证通过才切换** | 新版本先冒烟（HTTP 200）再锁定，失败记 known_bad 并保留旧版 |
-| **进程外 supervisor** | 崩溃自愈 / 托盘 / 日志全在壳里，DSH 更新不影响壳（参考 landlock-run 的 native 分发理念） |
-| **数据隔离** | 全部落在 `%LOCALAPPDATA%\dsh-desktop`（含 `$DSH_HOME`），不污染系统安装 |
+| **跟随系统 dsh，不管理版本** | 安装/升级交给系统 npm（`npm install -g @deepseek-ai/dsh`）；壳不做版本锁定/回滚/冒烟验证 |
+| **缺失即正常安装，不走 npx 临时拉取**（2026-08-19） | 临时拉取无法保证可用性与一致性；node 缺失→winget 装 LTS（弹一次 UAC），dsh 缺失→npm install -g（用户级）；wizard 自动触发 + 管理页手动兜底 |
+| **不隔离数据** | 不设 `DSH_HOME`，dsh 用其系统默认目录（`%USERPROFILE%\.dsh`），与终端用法一致 |
+| **进程外 supervisor** | 崩溃自愈 / 托盘 / 日志全在壳里，DSH 更新不影响壳 |
+| **壳只碰「门把手」** | 只依赖启动命令/端口探测/进程管理（`docs/cli-contract.md`），不解析 CLI 输出、不读内部文件、不碰插件 API |
+
+## 契约面（docs/cli-contract.md）
+
+- C1 `dsh web --host <host> --port <port>`（PATH 直启系统 dsh；缺失走安装流程，无 npx 回退）
+- C2 `GET http://127.0.0.1:<port>/` → HTTP 200（就绪探测）
+- C3 `dsh --patch <path>`（come.patch.yml overlay）
+- C4/C5 预留（v2 冒烟验证 / 插件管理）
 
 ## 与 dsh-tray 的关系
 
@@ -51,9 +70,9 @@ dsh-come.exe（Rust 单 exe，进程外 supervisor）
 
 ## 许可
 
-MIT。托盘图标使用 DeepSeek Harness 官方 favicon（`apps/web/public/favicon.svg`，MIT 仓库资产）——**图标为 DeepSeek AI 商标，仅作引用，不暗示官方联名或支持**。
+MIT。托盘图标为代码生成的 32x32 圆角图标（`src/tray.rs`），与 DeepSeek AI 商标无关联。
 
 ## Roadmap
 
-- ✅ v1（当前）：自举安装 / 引擎守护 / 验证式更新 / 插件市场（dsh-market 引导 + 工作台分组）/ 托盘（主题感知图标）/ `--app` 独立窗口 / 开机自启 / 首次向导 / 壳管理页
-- 🔜 v2：全 waterfall 冒烟（收编 `dsh-plugin-verify` 引擎）、launcher 自更新、远程清单由验证引擎增量产出、公网市场浏览页（第二个工作台上架后）
+- ✅ v1（当前）：进程守护 / 托盘（5 项菜单）/ 自动开浏览器 / come.patch.yml / 崩溃退避重启 / 自愈诊疗（doctor，证据驱动分级处置）
+- 🔜 可选：md-agent 守护（`docs/integration-plan.md` Phase 2）、三层集成（Phase 3）
