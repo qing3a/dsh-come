@@ -1,58 +1,37 @@
 //! Windows Job Object 作业对象：把 dsh 引擎整树纳入作业，给「进程外 supervisor」补齐最后一块拼图。
 //!
-//! 解决的真实脆弱点（见 supervisor.rs / main.rs 的崩溃模式）：
-//! 1. **守护进程崩溃 → dsh 变孤儿占端口**：`KILL_ON_JOB_CLOSE` 让 dsh-come（父进程）退出/崩溃时，
-//!    OS 强制杀掉作业内整树（cmd → dsh.cmd → node 全杀），不再留下占 3080 的孤儿 dsh。
-//! 2. **Windows 进程树杀不可靠**：`taskkill /T` 对脱离的孙进程会漏杀；`terminate_job()` 由 OS 一次性
-//!    杀掉作业内全部进程，比 `taskkill /T` 可靠。
+//! 作用（2026-08-21 调整后）：
+//! 1. **整树主动杀**：`terminate_job()` 由 OS 一次性杀掉作业内全部进程，比 `taskkill /T` 可靠
+//!    （不漏杀已脱离的孙进程），stop/重启用。
+//! 2. ~~守护崩溃 → 孤儿兜底~~：**不再设 `KILL_ON_JOB_CLOSE`**——托盘「退出时关闭引擎」复选框
+//!    让用户决定退出时是否保留引擎（2026-08-21）；若保留，job 句柄随进程关闭不能强杀引擎。
+//!    守护崩溃时残留的 dsh 由下次启动的**认领逻辑**接管（端口健康即认领，见 supervisor::start）。
 //!
 //! 仅 Windows 编译；非 Windows 提供空实现（return false / None），调用方回退 `taskkill`。
 //!
-//! 注意：作业句柄**故意不 `CloseHandle`**——句柄存活期间整树受控，进程退出时 OS 关句柄即触发
-//! `KILL_ON_JOB_CLOSE`。若主动 CloseHandle 反而会在正常运行中误杀引擎。
+//! 注意：作业句柄**故意不 `CloseHandle`**——句柄存活期间作业对象有效，`terminate_job()` 可用；
+//! 进程退出时 OS 自动回收（无 KILL_ON_CLOSE，不影响引擎存活）。
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use std::ffi::c_void;
     use std::sync::OnceLock;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     };
 
     // windows-sys 0.52 的 HANDLE 即 isize 别名；用 0 表示「未创建/失败」。
-    /// 进程级作业句柄（整树受 KILL_ON_JOB_CLOSE 约束），存活到 dsh-come 进程退出。
+    /// 进程级作业句柄（整树受控，供 terminate_job 主动杀），存活到 dsh-come 进程退出。
     static JOB: OnceLock<HANDLE> = OnceLock::new();
 
-    /// 创建带 `KILL_ON_JOB_CLOSE` 的作业；失败返回 0（NULL，调用方降级 taskkill）。
+    /// 创建作业（**不设 KILL_ON_JOB_CLOSE**——退出时是否关引擎由托盘复选框决定，见模块文档）；
+    /// 失败返回 0（NULL，调用方降级 taskkill）。
     fn create() -> HANDLE {
-        unsafe {
-            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if h == 0 {
-                return 0;
-            }
-            // 全零初始化（POD 结构），仅打开「父进程退出即杀整树」开关。
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let ok = SetInformationJobObject(
-                h,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            if ok == 0 {
-                CloseHandle(h);
-                return 0;
-            }
-            // 故意不 CloseHandle：见模块文档说明。
-            h
-        }
+        unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) }
     }
 
     /// 创建或取已存在的作业句柄（幂等）；未创建成功返回 None。

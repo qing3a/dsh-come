@@ -97,9 +97,16 @@ pub fn start(cfg: &AppConfig) {
                         std::thread::sleep(Duration::from_millis(500));
                     }
                     if became_ready {
-                        let url = format!("http://127.0.0.1:{}", exec_cfg.port);
-                        crate::tray::open_browser(&url);
-                        supervisor::log("引擎就绪，已打开界面");
+                        // 打开 dsh 引擎本体界面（默认端口 3080）
+                        let dsh_url = format!("http://127.0.0.1:{}", exec_cfg.port);
+                        crate::tray::open_browser(&dsh_url);
+                        // 同时打开 dsh-come 管理页（状态/安装/插件/版本，默认 3081）
+                        if exec_cfg.status_port != 0 {
+                            let admin_url =
+                                format!("http://127.0.0.1:{}", exec_cfg.status_port);
+                            crate::tray::open_browser(&admin_url);
+                        }
+                        supervisor::log("引擎就绪，已打开 dsh 界面与管理页");
                         if let Some(m) = HANDOFF.get() {
                             if let Ok(mut g) = m.lock() {
                                 *g = true;

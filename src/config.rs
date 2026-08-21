@@ -27,12 +27,20 @@ pub struct AppConfig {
     /// 浏览器访问 http://127.0.0.1:<port> 查看守护状态（实时 JSON，网页形态的状态管理）。
     #[serde(default = "default_status_port")]
     pub status_port: u16,
+    /// 托盘「退出」时是否关闭 dsh 引擎（快捷菜单复选框「退出时关闭引擎」）。
+    /// false = 退出时保留引擎运行（dsh 继续服务，下次启动自动认领）。
+    #[serde(default = "default_true")]
+    pub exit_close_engine: bool,
 }
 
 const DEFAULT_STATUS_PORT: u16 = 3081;
 
 fn default_status_port() -> u16 {
     DEFAULT_STATUS_PORT
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -45,6 +53,7 @@ impl Default for AppConfig {
             startup_timeout_secs: 240,
             doctor_mode: None,
             status_port: default_status_port(),
+            exit_close_engine: true,
         }
     }
 }

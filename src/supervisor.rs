@@ -479,9 +479,15 @@ pub fn restart(cfg: &AppConfig) -> Result<(), String> {
     start(cfg)
 }
 
-/// 退出清理（main 退出钩子）：关自动重启 + 杀进程（防残留 Node 占端口）
+/// 退出清理（main 退出钩子）：按托盘复选框「退出时关闭引擎」决定是否杀 dsh。
+/// - 勾选（默认）→ 关闭自动重启 + 杀进程（防残留 Node 占端口）
+/// - 未勾选 → 保留引擎运行（dsh 继续服务，下次启动 start() 认领接管）
 pub fn shutdown() {
-    let _ = stop();
+    if crate::config::load().exit_close_engine {
+        let _ = stop();
+    } else {
+        append_log("退出 dsh-come（按设置保留引擎运行，dsh 继续服务，下次启动将认领）");
+    }
 }
 
 // ---------- 状态持久化（供 CLI `status` 跨进程读取） ----------

@@ -319,38 +319,83 @@ fn uninstall_bundle(id: &str) -> Result<String, String> {
 }
 
 fn admin_html() -> String {
-    r#"<!doctype html>
+    r##"<!doctype html>
 <html lang="zh">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DSH 伴侣 · 管理</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:660px;margin:24px auto;padding:0 16px;color:#1f2328;background:#f6f8fa}
-h1{font-size:19px;font-weight:500}
-.card{background:#fff;border:1px solid #d0d7de;border-radius:12px;padding:16px 18px;margin:14px 0}
-h3{margin:0 0 10px;font-size:14px;font-weight:500;color:#444441}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-button{padding:8px 14px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;cursor:pointer}
-button:hover{background:#eef1f4}
-button:disabled{opacity:.5;cursor:not-allowed}
-.ok{color:#1a7f37}.bad{color:#cf222e}.muted{color:#5f5e5a}
-pre{background:#f6f8fa;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-all}
+:root{--ds:#4D6BFE;--ds-dark:#3a57e0;--bg:#F7F8FA;--card:#fff;--text:#1A1A1A;--muted:#6B7280;--border:#E5E7EB;--ok:#10B981;--bad:#EF4444;--warn:#F59E0B;--radius:16px;--shadow:0 1px 3px rgba(0,0,0,.06),0 4px 12px rgba(0,0,0,.04)}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;padding:24px 16px;background:var(--bg);color:var(--text);line-height:1.5}
+.wrap{max-width:840px;margin:0 auto}
+header{display:flex;align-items:center;gap:14px;margin-bottom:24px}
+header h1{font-size:22px;font-weight:600;margin:0;letter-spacing:-.3px}
+header p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.whale{width:42px;height:42px;flex-shrink:0;color:var(--ds)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h3{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 14px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center}
+.row.right{justify-content:flex-end;margin-top:8px}
+button{appearance:none;border:1px solid var(--border);background:#fff;color:var(--text);padding:8px 16px;border-radius:10px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s}
+button:hover{border-color:#cbd5e1;background:#f9fafb;transform:translateY(-1px)}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+button.primary{background:var(--ds);color:#fff;border-color:var(--ds)}
+button.primary:hover{background:var(--ds-dark);border-color:var(--ds-dark)}
+button.danger{color:var(--bad);border-color:#fecaca}
+button.danger:hover{background:#fef2f2}
+select{padding:7px 12px;border:1px solid var(--border);border-radius:10px;background:#fff;font-size:13px;color:var(--text);min-width:160px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.badge.ok{background:#d1fae5;color:#065f46}
+.badge.bad{background:#fee2e2;color:#991b1b}
+.badge.warn{background:#fef3c7;color:#92400e}
+.badge.muted{background:#f3f4f6;color:#4b5563}
+.status-big{font-size:18px;font-weight:600;margin-bottom:4px}
+.status-meta{color:var(--muted);font-size:13px}
+.env-line{display:flex;gap:24px;flex-wrap:wrap;font-size:13px}
+.env-item{display:flex;align-items:center;gap:6px}
+.env-item .dot{width:7px;height:7px;border-radius:50%}
+.env-item .dot.ok{background:var(--ok)}.env-item .dot.bad{background:var(--bad)}.env-item .dot.muted{background:#d1d5db}
+.list{font-size:13px}
+.item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+.item:last-child{border-bottom:none}
+.item .name{font-weight:500;word-break:break-all}
+.item .source{font-size:12px;color:var(--muted);margin-top:2px}
+.item .tag{font-size:11px;padding:2px 6px;border-radius:6px;background:#eef2ff;color:var(--ds);font-weight:600;margin-left:6px}
+.empty{color:var(--muted);font-size:13px;padding:8px 0}
+#toast{position:fixed;right:16px;bottom:16px;max-width:420px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:0 10px 25px rgba(0,0,0,.12);font-size:13px;z-index:50;transform:translateY(120%);transition:transform .25s;pointer-events:none}
+#toast.show{transform:translateY(0)}
+#toast.ok{border-left:4px solid var(--ok)}
+#toast.bad{border-left:4px solid var(--bad)}
 </style>
-<h1>DSH 伴侣 · 管理</h1>
+</head>
+<body>
+<div class="wrap">
+<header>
+<svg class="whale" viewBox="0 0 50 50" fill="currentColor" aria-hidden="true"><path d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></svg>
+<div>
+<h1>DSH 伴侣</h1>
+<p>DeepSeek Harness 本地守护 · 管理页</p>
+</div>
+</header>
 
 <div class="card">
 <h3>dsh 引擎</h3>
-<div id="eng" class="muted">加载中…</div>
+<div class="status-big" id="engStatus">加载中…</div>
+<div class="status-meta" id="engMeta">等待状态端点响应</div>
 <div class="row">
+<button class="primary" onclick="openDsh()">打开 dsh 界面</button>
 <button onclick="act('start')">启动 dsh</button>
 <button onclick="act('stop')">关闭 dsh</button>
 </div>
 </div>
 
+<div class="grid2">
 <div class="card">
-<h3>环境与安装</h3>
-<div id="env" class="muted">加载中…</div>
-<div id="installMsg"></div>
+<h3>运行环境</h3>
+<div class="env-line" id="env">加载中…</div>
 <div class="row">
 <button id="btn-node" onclick="act('install/node')">安装 Node.js</button>
 <button id="btn-dsh" onclick="act('install/dsh')">安装 dsh</button>
@@ -358,21 +403,27 @@ pre{background:#f6f8fa;border-radius:8px;padding:10px;font-size:12px;white-space
 </div>
 
 <div class="card">
-<h3>dsh 版本</h3>
-<div id="dshver" class="muted">加载中…</div>
+<h3>版本管理</h3>
+<div id="dshver">加载中…</div>
 <div class="row">
-<button id="btn-upd" onclick="act('dsh/update')">更新到最新</button>
-<select id="ver-sel" style="padding:6px;border-radius:8px;border:1px solid #d0d7de"></select>
-<button onclick="installVer()">安装所选版本</button>
+<button class="primary" id="btn-upd" onclick="act('dsh/update')">更新到最新</button>
+<select id="ver-sel"><option value="">选择历史版本…</option></select>
+<button onclick="installVer()">安装所选</button>
+</div>
 </div>
 </div>
 
 <div class="card">
 <h3>已安装插件（web profile）</h3>
-<div id="plugins" class="muted">加载中…</div>
+<div class="list" id="plugins">加载中…</div>
+</div>
+
+<div id="toast"></div>
 </div>
 
 <script>
+let DSPORT = 3080;
+function openDsh(){ window.open('http://127.0.0.1:'+DSPORT, '_blank'); }
 async function act(a){
   try {
     const r = await fetch('/api/'+a,{method:'POST'});
@@ -400,67 +451,93 @@ async function uninstall(id){
   } catch(e){ flash('卸载请求失败：'+e, false); }
   refresh();
 }
+let toastTimer;
 function flash(msg, ok){
-  const el = document.getElementById('installMsg');
-  el.innerHTML = '<pre class="'+(ok?'ok':'bad')+'">'+msg+'</pre>';
+  const el = document.getElementById('toast');
+  el.className = ok ? 'ok' : 'bad';
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ok ? 5000 : 8000);
+}
+function fmtEnv(label, value, ok){
+  return '<div class="env-item"><span class="dot '+(ok?'ok':'bad')+'"></span><span>'+label+' '+value+'</span></div>';
 }
 async function refresh(){
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
     const e = d.eng||{};
-    document.getElementById('eng').innerHTML =
-      '<b class="'+(e.running?'ok':'bad')+'">'+(e.running?'运行中':'已停止')+'</b>'+
-      (e.ready?' · 就绪':' · 未就绪')+' · 端口 '+e.port+
-      (e.pid?' · pid '+e.pid:'')+(e.version?' · '+e.version:'');
+    if (e.port) DSPORT = e.port;
+    const running = !!e.running;
+    const ready = !!e.ready;
+    const big = document.getElementById('engStatus');
+    const meta = document.getElementById('engMeta');
+    if (running && ready) {
+      big.innerHTML = '<span class="badge ok">运行中</span>';
+      meta.innerHTML = 'dsh 已就绪 · 端口 '+e.port+(e.pid?' · PID '+e.pid:'')+(e.version?' · '+e.version:'');
+    } else if (running) {
+      big.innerHTML = '<span class="badge warn">启动中</span>';
+      meta.innerHTML = 'dsh 正在启动'+(e.stage?' · '+e.stage:'')+(e.pid?' · PID '+e.pid:'');
+    } else if (e.last_error) {
+      big.innerHTML = '<span class="badge bad">已停止</span>';
+      meta.innerHTML = '上次错误：'+e.last_error;
+    } else {
+      big.innerHTML = '<span class="badge bad">已停止</span>';
+      meta.innerHTML = 'dsh 未在运行';
+    }
     const v = d.env||{};
     document.getElementById('env').innerHTML =
-      'Node '+(v.node?'<span class="ok">'+v.node+'</span>':'<span class="bad">未安装</span>')+
-      ' · npm '+(v.npm?'<span class="ok">'+v.npm+'</span>':'<span class="bad">未安装</span>')+
-      ' · dsh '+(v.dsh?'<span class="ok">'+v.dsh+'</span>':'<span class="bad">未安装</span>')+
-      ' · winget '+(v.winget?'<span class="ok">可用</span>':'<span class="muted">不可用</span>');
+      fmtEnv('Node', v.node||'未安装', !!v.node)+
+      fmtEnv('npm', v.npm||'未安装', !!v.npm)+
+      fmtEnv('dsh', v.dsh||'未安装', !!v.dsh)+
+      fmtEnv('winget', v.winget||'不可用', !!v.winget);
     const ins = d.install||{};
     document.getElementById('btn-node').disabled = !!ins.running;
     document.getElementById('btn-dsh').disabled = !!ins.running;
     if (ins.running) flash('安装中：'+(ins.kind||'')+' … '+(ins.msg||''), true);
     else if (ins.msg && ins.kind && !ins.running) flash((ins.ok?'安装成功：':'安装失败：')+ins.msg, !!ins.ok);
   } catch(e){
-    document.getElementById('eng').innerHTML = '<span class="bad">无法连接状态端点</span>';
+    document.getElementById('engStatus').innerHTML = '<span class="badge bad">连接失败</span>';
+    document.getElementById('engMeta').textContent = '无法连接状态端点';
   }
   try {
     const vr = await fetch('/api/dsh/versions');
     const dv = await vr.json();
-    const vel = document.getElementById('dshver');
     const cur = dv.current||'未安装';
-    const lat = dv.latest||'查询失败（离线？）';
-    const tag = dv.latest_tag ? ' · <span class="muted">npm stable tag: '+dv.latest_tag+'</span>' : '';
-    let badge = dv.has_update ? '<span class="bad">有新版本 '+lat+'</span>' : '<span class="ok">已是最新</span>';
-    vel.innerHTML = '当前 <b>'+cur+'</b> · 最新发布 <b>'+lat+'</b>'+tag+' · '+badge;
+    const lat = dv.latest||'查询失败';
+    const tagInfo = dv.latest_tag ? ' · npm stable tag: '+dv.latest_tag : '';
+    const badge = dv.has_update ? '<span class="badge warn">可更新到 '+lat+'</span>' : '<span class="badge ok">已是最新</span>';
+    document.getElementById('dshver').innerHTML =
+      '<div style="margin-bottom:8px">当前 <b>'+cur+'</b> · 最新发布 <b>'+lat+'</b>'+tagInfo+'</div>'+badge;
     const sel = document.getElementById('ver-sel');
     const prev = sel.value;
     sel.innerHTML = '<option value="">选择历史版本…</option>'+(dv.versions||[]).map(v=>'<option value="'+v+'">'+v+'</option>').join('');
     if (prev) sel.value = prev;
     document.getElementById('btn-upd').disabled = !dv.has_update;
   } catch(e){
-    document.getElementById('dshver').innerHTML = '<span class="bad">版本信息读取失败</span>';
+    document.getElementById('dshver').innerHTML = '<span class="badge bad">版本信息读取失败</span>';
   }
   try {
     const pr = await fetch('/api/plugins');
     const pl = await pr.json();
     const el = document.getElementById('plugins');
-    if (!pl.exists) { el.innerHTML = '<span class="muted">未找到 profile 目录：'+pl.dir+'</span>'; }
+    if (!pl.exists) { el.innerHTML = '<div class="empty">未找到 profile 目录：'+pl.dir+'</div>'; }
     else {
-      const b = (pl.bundles||[]).map(x=>'<div>'+x+' <button onclick="uninstall(\''+x+'\')">卸载</button></div>').join('') || '<span class="muted">无</span>';
-      const p = (pl.patches||[]).map(x=>'<div><b>'+(x.local?'本地':'')+'</b> '+x.id+' <button onclick="uninstall(\''+x.id+'\')">卸载</button><br><span class="muted" style="font-size:11px">'+x.source+'</span></div>').join('') || '<span class="muted">无</span>';
-      el.innerHTML = '<div>市场/NPM（'+(pl.bundles||[]).length+'）：<br>'+b+'</div>'+
-        '<div style="margin-top:8px">本地 patch（'+(pl.patches||[]).length+'）：<br>'+p+'</div>';
+      let html = '<div style="margin-bottom:12px"><b>市场 / NPM</b> <span class="badge muted">'+(pl.bundles||[]).length+'</span></div>';
+      html += (pl.bundles||[]).length ? (pl.bundles||[]).map(x=>'<div class="item"><div><div class="name">'+x+'</div></div><button class="danger" onclick="uninstall(\''+x+'\')">卸载</button></div>').join('') : '<div class="empty">无</div>';
+      html += '<div style="margin:18px 0 12px"><b>本地 patch</b> <span class="badge muted">'+(pl.patches||[]).length+'</span></div>';
+      html += (pl.patches||[]).length ? (pl.patches||[]).map(x=>'<div class="item"><div><div class="name">'+x.id+(x.local?'<span class="tag">本地</span>':'')+'</div><div class="source">'+x.source+'</div></div><button class="danger" onclick="uninstall(\''+x.id+'\')">卸载</button></div>').join('') : '<div class="empty">无</div>';
+      el.innerHTML = html;
     }
   } catch(e){
-    document.getElementById('plugins').innerHTML = '<span class="bad">插件清单读取失败</span>';
+    document.getElementById('plugins').innerHTML = '<span class="badge bad">插件清单读取失败</span>';
   }
 }
 setInterval(refresh, 2000);
 refresh();
-</script>"#
+</script>
+</body>
+</html>"##
         .to_string()
 }
