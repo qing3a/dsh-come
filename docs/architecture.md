@@ -29,12 +29,17 @@
 `http://127.0.0.1:<status_port>`（config.status_port，默认 3081，0=关闭）：
 
 - `GET /` → 内嵌 HTML 管理页：dsh 引擎状态卡片 + 环境探测卡片 + 安装状态 + 按钮
-  （启动 dsh / 关闭 dsh / 安装 Node.js / 安装 dsh），JS 每 2s 轮询
+  （启动 dsh / 关闭 dsh / 安装 Node.js / 安装 dsh / 纯净卸载），JS 每 2s 轮询
 - `GET /api/status` → `{ eng: 守护状态, env: node/npm/dsh/winget 探测, install: 安装状态 }`
 - `POST /api/install/node` → winget 静默装 Node.js LTS（会弹一次 UAC）
 - `POST /api/install/dsh` → `npm install -g @deepseek-ai/dsh`（用户级，无 UAC）
 - `POST /api/start` / `POST /api/stop` → 启停 dsh
+- `POST /api/dsh/uninstall` → 纯净卸载 dsh（query: keepData=0/1, cleanShim=0/1，同步执行）
 - `GET /api/install/status` → 安装任务状态（running/ok/msg）
+
+**边界（2026-08-29 收敛）**：壳管理页只留**救急面**（安装引导 / 引擎启停 / 纯净卸载）。
+插件装卸、dsh 版本管理等**日常面**一律跳转 dsh web 完成——壳不实现，也不提供对应 API
+（曾有的 `/api/plugins`、`/api/plugin/*`、`/api/dsh/versions`、`/api/dsh/update` 已删除）。
 
 **安装原则（2026-08-19 用户拍板）**：不走 npx 临时拉取——dsh 缺失就正常安装。启动引导
 （wizard）检测到缺失时**自动安装**：node 缺失 → winget（480s 超时，UAC 取消/无 winget 则提示
@@ -77,8 +82,28 @@ DSH 伴侣｜0.1.0-rc.6｜运行中 ✓ http://127.0.0.1:3080
   `resources/dsh-health-plugin.js` 参考，需手动启用），缺失降级 `/`
 - **崩溃自愈**：指数退避（1,2,4…封顶）+ 健康期清零预算 + 每次重启前逐级升级诊疗（处置→主治→急救）
   + 上限耗尽急救兜底；monitor 锁中毒恢复 + heal/start 包 catch_unwind（守护本身有守护）
-- **稳定性**：Job Object（KILL_ON_JOB_CLOSE 崩溃整树强杀）+ 看门狗计划任务
-  （`scripts/install-watchdog.ps1`：登录启动 + 每分钟检查复活）
+- **稳定性**：Job Object（KILL_ON_JOB_CLOSE 崩溃整树强杀）+ 系统级看门狗
+  （Windows 计划任务 `scripts/install-watchdog.ps1`；macOS launchd / Linux systemd
+  `scripts/install-watchdog.sh`——崩溃/被关后自动复活）
+
+## 看门狗与分发（2026-08-29 跨平台）
+
+- **看门狗（系统级，dsh-come 自己的守护）**：进程外 supervisor 守护 dsh，但 dsh-come 自身崩溃后
+  需要系统级机制复活——`scripts/install-watchdog.{ps1,sh}`：
+  - Windows：计划任务「DSH伴侣守护」（登录启动 + 每分钟检查 + IgnoreNew，配合单实例锁）
+  - macOS：launchd LaunchAgent（`KeepAlive`，进程退出即重启）
+  - Linux：systemd user unit（`Restart=always` + 60s 退避；ExecStart 带 `--no-tray`，
+    **无头为一等形态**——托盘在 Linux 是 best-effort，审计 P2-5）
+- **自更新换装（updater.rs）**：换装窗口期先停看门狗（Windows `schtasks /Disable`／macOS
+  `launchctl bootout`／Linux `systemctl --user stop`），换完再拉起——否则 KeepAlive/Restart
+  会把旧版本立刻拉起，pid 永不退出、换装死等 30s 超时。更新清单按平台分发：
+  `update-{win|macos|linux}.json`（updater 按自身平台取对应清单；旧版 Windows 兼容无后缀
+  `update.json`）。
+- **分发形态**：Windows 单 exe（dist/dsh-come.exe）；Unix 选**安装脚本**路线（brew tap / deb-rpm
+  未选——个人项目安装脚本覆盖足够）：`scripts/install.sh` 一键下载 + sha256 校验 + 装到
+  `~/.local/bin` + 注册看门狗。
+- **发布流水线（release.yml）**：矩阵构建 windows / macos（x64+arm64 lipo 成 universal）/
+  linux；release 附三个二进制 + 按平台 update.json + 安装脚本（install.sh / install-watchdog.sh）。
 
 ## 配置（root_dir/config.json）
 

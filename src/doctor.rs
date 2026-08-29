@@ -17,6 +17,7 @@
 //!   急救 Emergency（全量，红色必先备份）—— 即「兜底方案」。
 
 use crate::config::AppConfig;
+use crate::patchyml::{file_uri_path, looks_like_patch, parse_entries, remove_entry};
 use crate::runtime;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -225,7 +226,7 @@ fn probe_port(cfg: &AppConfig, out: &mut Vec<Finding>) {
             out.push(Finding {
                 id: "port-healthy-claimed",
                 title: format!("端口 {} 已有健康 dsh 运行（pid={}），将接管而非重复启动", cfg.port, pid),
-                evidence: format!("HTTP 200 且 netstat 显示 127.0.0.1:{} LISTENING（PID {pid}）", cfg.port),
+                evidence: format!("HTTP 200 且端口探测显示 127.0.0.1:{} 被 PID {pid} 监听", cfg.port),
                 blast: Blast::Green,
                 remedy: None, // start() 的认领逻辑处理，无需处置
             });
@@ -233,7 +234,7 @@ fn probe_port(cfg: &AppConfig, out: &mut Vec<Finding>) {
             out.push(Finding {
                 id: "port-conflict",
                 title: format!("端口 {} 被不健康进程占用，dsh web 无法绑定", cfg.port),
-                evidence: format!("netstat 显示 127.0.0.1:{} 已被 PID {} 监听（LISTENING），但 HTTP 不响应——可能是僵尸 node 残留", cfg.port, pid),
+                evidence: format!("端口探测显示 127.0.0.1:{} 已被 PID {} 监听（LISTENING），但 HTTP 不响应——可能是僵尸 node 残留", cfg.port, pid),
                 blast: Blast::Yellow,
                 remedy: Some(Remedy::RemovePortHolder { pid, attributable }),
             });
@@ -312,7 +313,7 @@ fn probe_profile_patch(out: &mut Vec<Finding>) {
 
 /// 5) 残缺下载：扫描 dsh 数据根 + 启动器根两处（不写死单一目录）
 fn probe_partial_downloads(out: &mut Vec<Finding>) {
-    // 两处根都扫：dsh 数据根（.dsh）与启动器根（dsh-desktop），去重合并成一条发现
+    // 两处根都扫：dsh 数据根（.dsh）与启动器根（dsh-come），去重合并成一条发现
     let roots = [runtime::system_home_dir(), runtime::root_dir()];
     let mut seen = std::collections::HashSet::new();
     let mut junk: Vec<PathBuf> = Vec::new();
@@ -532,7 +533,7 @@ fn summarize(results: &[(String, Result<String, String>)]) -> String {
 /// 不写死绝对路径——从环境变量解析 dsh 根目录后，在根内「扫描」实际位置：
 /// 1) 约定路径 `<home>/.dsh/profiles/web/cordis.patch.yml`（最常见）
 /// 2) 否则在 dsh 根目录内递归扫描同名文件（有界深度，防大目录卡死）
-/// 3) 同样扫描启动器根目录（部分布局 patch 可能在 dsh-desktop 下）
+/// 3) 同样扫描启动器根目录（部分布局 patch 可能在 dsh-come 下）
 /// 4) 都没命中则回退约定路径——上层据此检测为「无 patch」而跳过
 fn profile_patch_path() -> PathBuf {
     let home = runtime::system_home_dir();
@@ -588,14 +589,38 @@ fn backup(p: &Path) -> Result<(), String> {
 }
 
 fn kill_pid(pid: u32) -> Result<(), String> {
-    let mut cmd = Command::new("taskkill");
-    cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
-    crate::supervisor::hide_window(&mut cmd);
-    let status = cmd.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("taskkill PID {pid} 返回非零（可能已退出或无权限）"))
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
+        crate::supervisor::hide_window(&mut cmd);
+        let status = cmd.status().map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("taskkill PID {pid} 返回非零（可能已退出或无权限）"))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // SAFETY: kill 信号调用；pid>0 单进程（孤儿清理，非进程组——组杀在 supervisor::kill_tree）
+        let r = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if r == 0 {
+            // 等 2s 优雅退出，未果 SIGKILL
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // SAFETY: 0 号信号探测存活；进程不存在返回 -1
+            let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+            if alive {
+                // SAFETY: 同上
+                let k = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                if k != 0 {
+                    return Err(format!("kill -9 PID {pid} 失败（可能已退出或无权限）"));
+                }
+            }
+            Ok(())
+        } else {
+            Err(format!("kill PID {pid} 失败（可能已退出或无权限）"))
+        }
     }
 }
 
@@ -607,22 +632,116 @@ fn capture(mut cmd: Command) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// 查端口被谁监听（netstat -ano -p tcp），返回占用 PID
-/// `pub(crate)`：supervisor 认领已在运行的 dsh 时复用（避免重复 netstat 解析）
+/// 查端口被谁监听（平台化），返回占用 PID。
+/// - Windows：`cmd /C netstat -ano -p tcp`。
+/// - Linux：直读 `/proc/net/tcp`(+tcp6) + `/proc/<pid>/fd`（见 `listening_pid_linux`），
+///   不依赖 ss——容器与精简系统常缺 ss，且 /proc 直读天然免疫输出格式差异。
+/// - macOS：`lsof -nP -iTCP:<port> -sTCP:LISTEN`。
+/// `pub(crate)`：supervisor 认领已在运行的 dsh 时复用（避免重复解析）。
 pub(crate) fn listening_pid_on_port(port: u16) -> Option<u32> {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg("netstat -ano -p tcp");
-    let out = capture(cmd)?;
-    for line in out.lines() {
-        if let Some(pid) = parse_listening_pid(line, port) {
-            return Some(pid);
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg("netstat -ano -p tcp");
+        let out = capture(cmd)?;
+        for line in out.lines() {
+            if let Some(pid) = parse_listening_pid(line, port) {
+                return Some(pid);
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        listening_pid_linux(port)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("lsof");
+        cmd.args(["-nP", "-iTCP", &format!("{port}"), "-sTCP:LISTEN"]);
+        let out = capture(cmd)?;
+        for line in out.lines() {
+            if let Some(pid) = parse_lsof_listener(line, port) {
+                return Some(pid);
+            }
+        }
+        None
+    }
+}
+
+/// Linux 端口占用探测：直读 `/proc/net/tcp` 与 `/proc/net/tcp6`（审计 P2-2）。
+///
+/// 两步走：
+/// 1. 在 TCP 表里找 `st == 0A`（LISTEN）且本地端口匹配的行，记下 socket inode；
+/// 2. 遍历 `/proc/<pid>/fd/*` 的 readlink，命中 `socket:[<inode>]` 即得占用 pid。
+///
+/// 全程不 spawn 任何外部命令，`/proc` 缺失时（非 Linux 内核挂载）返回 None。
+#[cfg(target_os = "linux")]
+fn listening_pid_linux(port: u16) -> Option<u32> {
+    let want_port = format!("{:04X}", port);
+    let mut inodes: Vec<String> = Vec::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(table) else {
+            continue; // tcp6 在部分内核不存在，跳过不影响
+        };
+        for line in text.lines().skip(1) {
+            if let Some(inode) = tcp_line_inode(line, &want_port) {
+                inodes.push(inode);
+            }
+        }
+    }
+    if inodes.is_empty() {
+        return None;
+    }
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return None;
+    };
+    for e in entries.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(e.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let Ok(target) = std::fs::read_link(fd.path()) else {
+                continue;
+            };
+            let t = target.to_string_lossy();
+            if let Some(num) = t.strip_prefix("socket:[").and_then(|s| s.strip_suffix(']')) {
+                if inodes.iter().any(|i| i == num) {
+                    return Some(pid);
+                }
+            }
         }
     }
     None
 }
 
-/// 纯函数：解析单行 netstat 输出，命中端口则返回 PID（供单测）
-/// `pub(crate)`：supervisor 认领逻辑复用同一解析规则
+/// 解析 `lsof -iTCP:<port>` 单行（macOS）：
+/// `COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME`，NAME 列含 `*:3080 (LISTEN)`。
+#[cfg(target_os = "macos")]
+fn parse_lsof_listener(line: &str, port: u16) -> Option<u32> {
+    if line.starts_with("COMMAND") {
+        return None; // 表头
+    }
+    let f: Vec<&str> = line.split_whitespace().collect();
+    if f.len() < 2 {
+        return None;
+    }
+    let name = f.last()?;
+    // NAME 形如 `*:3080 (LISTEN)` / `127.0.0.1:3080 (LISTEN)`——末列含 (LISTEN) 且端口匹配
+    if name.contains(&format!(":{port}")) && name.contains("(LISTEN)") {
+        f.get(1)?.parse::<u32>().ok()
+    } else {
+        None
+    }
+}
+
+/// 纯函数：解析单行 netstat 输出，命中端口则返回 PID（供单测 + supervisor 认领逻辑）。
+/// `pub(crate)`：supervisor 认领逻辑复用同一解析规则。
+/// Unix 分支不解析 netstat（用 ss/lsof），故非 Windows 下未引用——保留供测试/文档。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn parse_listening_pid(line: &str, port: u16) -> Option<u32> {
     let f: Vec<&str> = line.split_whitespace().collect();
     // 形如：TCP    127.0.0.1:3080    0.0.0.0:0    LISTENING    1234
@@ -650,34 +769,147 @@ fn pid_cmdline(pid: u32) -> Option<String> {
         .map(|(_, _, _, cl)| cl)
 }
 
-/// 全进程表（pid, ppid, name, cmdline）：PowerShell Get-CimInstance 一次取回。
-/// 替代 wmic（Win11 24H2+ 已弃用，部分新机器无此命令）；PowerShell 5.1 全系可用。
+/// 全进程表（pid, ppid, name, cmdline），平台化。
+/// - Windows：PowerShell Get-CimInstance 一次取回（替代已弃用的 wmic）。
+/// - Linux：直读 `/proc/<pid>/stat` + `cmdline`（见 `ps_table_linux`），
+///   不依赖 ps——容器与精简系统常缺失，且 BSD/BusyBox 输出格式不同。
+/// - macOS：`ps -axo pid,ppid,comm,command`（BSD 变体）。
 fn ps_table() -> Vec<(u32, u32, String, String)> {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(
-        "powershell -NoProfile -NonInteractive -Command \
-         \"Get-CimInstance Win32_Process | ForEach-Object { \\\"$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)|$($_.CommandLine)\\\" }\"",
-    );
-    let Some(out) = capture(cmd) else { return vec![] };
-    let mut res = Vec::new();
-    for line in out.lines() {
-        let mut f = line.splitn(4, '|');
-        let (Some(pid), Some(ppid), Some(name)) = (
-            f.next().and_then(|s| s.trim().parse::<u32>().ok()),
-            f.next().and_then(|s| s.trim().parse::<u32>().ok()),
-            f.next().map(|s| s.trim().to_string()),
-        ) else {
-            continue;
-        };
-        let cl = f.next().unwrap_or("").trim().to_string();
-        res.push((pid, ppid, name, cl));
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(
+            "powershell -NoProfile -NonInteractive -Command \
+             \"Get-CimInstance Win32_Process | ForEach-Object { \\\"$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)|$($_.CommandLine)\\\" }\"",
+        );
+        let Some(out) = capture(cmd) else { return vec![] };
+        let mut res = Vec::new();
+        for line in out.lines() {
+            let mut f = line.splitn(4, '|');
+            let (Some(pid), Some(ppid), Some(name)) = (
+                f.next().and_then(|s| s.trim().parse::<u32>().ok()),
+                f.next().and_then(|s| s.trim().parse::<u32>().ok()),
+                f.next().map(|s| s.trim().to_string()),
+            ) else {
+                continue;
+            };
+            let cl = f.next().unwrap_or("").trim().to_string();
+            res.push((pid, ppid, name, cl));
+        }
+        res
     }
-    res
+    #[cfg(target_os = "linux")]
+    {
+        ps_table_linux()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("ps");
+        cmd.args(["-axo", "pid,ppid,comm,command"]);
+        let Some(out) = capture(cmd) else { return vec![] };
+        let mut res = Vec::new();
+        for line in out.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 4 {
+                continue;
+            }
+            let (Some(pid), Some(ppid)) = (
+                f[0].trim().parse::<u32>().ok(),
+                f[1].trim().parse::<u32>().ok(),
+            ) else {
+                continue;
+            };
+            let name = f[2].trim().to_string();
+            // command 可能含空格：从第 4 列拼到行尾（跳过表头第一行）
+            let cl = f[3..].join(" ");
+            if name == "PID" {
+                continue; // ps 表头
+            }
+            res.push((pid, ppid, name, cl));
+        }
+        res
+    }
 }
 
-/// node/dsh 相关进程名（与 dsh 引擎链相关；dsh.cmd 为 CLI 包装，node.exe 为实际运行器）
+/// 解析 `/proc/net/tcp`(或 tcp6) 一行：仅当该行是 LISTEN(`st == 0A`) 且本地端口
+/// 与目标一致时返回 socket inode（第 10 列），否则 None。纯函数，可单测。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn tcp_line_inode(line: &str, want_port: &str) -> Option<String> {
+    let f: Vec<&str> = line.split_whitespace().collect();
+    if f.get(3) != Some(&"0A") {
+        return None; // 0A = LISTEN
+    }
+    let local = f.get(1)?; // 形如 0100007F:0C08（little-endian IP + hex port）
+    let (_, port_hex) = local.split_once(':')?;
+    if !port_hex.eq_ignore_ascii_case(want_port) {
+        return None;
+    }
+    f.get(9).map(|s| s.to_string())
+}
+
+/// 解析 `/proc/<pid>/stat` 一行 → (pid, ppid, comm)。
+/// comm 本身可能含空格与括号（内核以 `(` 包裹）：取「第一个 `(` 之后」到
+/// 「最后一个 `)` 之前」为 comm，`)` 之后才是 state/ppid 等字段。
+/// 僵尸进程（state=Z）返回 None（无 cmdline 意义，且污染孤儿判断）。纯函数，可单测。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_stat(line: &str) -> Option<(u32, u32, String)> {
+    let (head, _) = line.split_once(' ')?;
+    let pid = head.parse::<u32>().ok()?;
+    let lp = line.find('(')?;
+    let rp = line.rfind(')')?;
+    if rp <= lp {
+        return None;
+    }
+    let comm = line[lp + 1..rp].to_string();
+    let fields: Vec<&str> = line[rp + 1..].split_whitespace().collect();
+    let state = fields.first().copied()?;
+    if state == "Z" {
+        return None;
+    }
+    let ppid = fields.get(1)?.parse::<u32>().ok()?;
+    Some((pid, ppid, comm))
+}
+
+/// Linux 进程表：直读 `/proc/<pid>/stat`（pid/ppid/comm）与 `cmdline`（审计 P2-2）。
+///
+/// stat 行解析按内核约定：`pid (comm) state ppid ...`，comm 本身**可能含空格或括号**，
+/// 因此取「第一个 `(` 之后」到「最后一个 `)` 之前」为 comm，`)` 之后才是状态字段。
+/// 僵尸进程（state=Z）跳过：无 cmdline 意义，且会污染孤儿判断。
+/// cmdline 为 NUL 分隔 argv，替换为空格。内核线程 cmdline 为空，comm 仍可读。
+#[cfg(target_os = "linux")]
+fn ps_table_linux() -> Vec<(u32, u32, String, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else {
+            continue;
+        };
+        let Some((_pid, ppid, comm)) = parse_proc_stat(&stat) else {
+            continue;
+        };
+        let cl = std::fs::read(e.path().join("cmdline"))
+            .map(|b| String::from_utf8_lossy(&b).replace('\0', " "))
+            .unwrap_or_default();
+        out.push((pid, ppid, comm, cl.trim().to_string()));
+    }
+    out
+}
+
+/// node/dsh 相关进程名（与 dsh 引擎链相关；Windows 下 dsh.cmd 为 CLI 包装，node.exe 为实际运行器）
 fn name_matches_dsh(name: &str) -> bool {
-    matches!(name, "node.exe" | "dsh.exe" | "dsh.cmd")
+    #[cfg(target_os = "windows")]
+    {
+        matches!(name, "node.exe" | "dsh.exe" | "dsh.cmd")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        matches!(name, "node" | "dsh")
+    }
 }
 
 /// 当前引擎进程树（supervisor 管理的顶层进程 + 其全部后代）。
@@ -716,65 +948,18 @@ fn collect_subtree(
 
 // ===================== patch 文件解析（轻量，不引 YAML 库） =====================
 
-/// 顶层列表项（行首 `- `，无前导空白）的行区间 [start, end)
-fn top_level_entry_ranges(text: &str) -> Vec<(usize, usize)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let starts: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, ln)| ln.starts_with("- "))
-        .map(|(i, _)| i)
-        .collect();
-    let mut ranges = Vec::new();
-    for (k, s) in starts.iter().enumerate() {
-        let e = if k + 1 < starts.len() { starts[k + 1] } else { lines.len() };
-        ranges.push((*s, e));
-    }
-    ranges
-}
-
-fn entry_id_of(block: &str) -> Option<String> {
-    for ln in block.lines() {
-        let t = ln.trim_start();
-        let t = t.strip_prefix("- ").unwrap_or(t); // 顶层列表项首行带 "- "
-        if let Some(rest) = t.strip_prefix("id:") {
-            let v = rest.trim().trim_matches('"').trim_matches('\'').to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
-    }
-    None
-}
-
-/// 返回所有「file:// 源指向不存在路径」的条目 (id, src)
+/// 返回所有「file:// 源指向不存在路径」的条目 (id, src)。
+///
+/// 解析与路径归一化都由 `patchyml` 提供——与 `status.rs` 共用同一套规则，
+/// 避免「自愈认为该删、管理页却看不到这个条目」这类矛盾判断。
 fn orphan_file_entries(text: &str) -> Vec<(String, String)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let ranges = top_level_entry_ranges(text);
     let mut out = Vec::new();
-    for (s, e) in ranges {
-        let block: String = lines[s..e].join("\n");
-        let id = match entry_id_of(&block) {
+    for entry in parse_entries(text) {
+        let id = match entry.id {
             Some(i) => i,
             None => continue,
         };
-        if let Some((idx, _)) = block.match_indices("file://").next() {
-            let rest = &block[idx + "file://".len()..];
-            let raw: String = rest
-                .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
-                .collect();
-            // 归一化 file:///C:/x（三重斜杠）→ C:/x（Windows 下 /C: 不会被正确解析，
-            // 否则真实存在的路径会被误判为孤儿）
-            let path = if let Some(stripped) = raw.strip_prefix('/') {
-                if stripped.as_bytes().get(1) == Some(&b':') {
-                    stripped.to_string() // /C:/x → C:/x
-                } else {
-                    raw
-                }
-            } else {
-                raw
-            };
+        if let Some(path) = file_uri_path(&entry.text) {
             if !path.is_empty() && !Path::new(&path).exists() {
                 out.push((id, path));
             }
@@ -783,42 +968,8 @@ fn orphan_file_entries(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// 从 patch 文本中删除指定 id 的顶层条目，返回新文本；找不到返回 None
-fn remove_entry(text: &str, entry_id: &str) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let ranges = top_level_entry_ranges(text);
-    for (s, e) in &ranges {
-        let block: String = lines[*s..*e].join("\n");
-        if entry_id_of(&block).as_deref() == Some(entry_id) {
-            let mut new_lines = lines[..*s].to_vec();
-            new_lines.extend_from_slice(&lines[*e..]);
-            return Some(new_lines.join("\n"));
-        }
-    }
-    None
-}
-
-/// 轻量判断文本是否像合法 patch 列表（不追求完整 YAML 解析）
-fn looks_like_patch(text: &str) -> bool {
-    for ln in text.lines() {
-        let t = ln.trim_start();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        if t == "[]" || t == "{}" {
-            continue; // 空序列 / 空映射，合法
-        }
-        if t.starts_with("- ") {
-            continue; // 顶层列表项
-        }
-        if ln.starts_with(' ') {
-            continue; // 缩进续行
-        }
-        // 顶层出现非列表/非注释/非缩进的行 → 可疑
-        return false;
-    }
-    true
-}
+// `remove_entry` / `looks_like_patch` 已上移到 `patchyml`，与 status.rs 共用同一实现。
+// 此前两份手写解析器规则不同（嵌套判定、id 写法识别），会对同一文件给出矛盾结论。
 
 /// 收集 .dsh 下的残缺下载/临时文件（有界扫描，防止大目录卡死）
 fn collect_junk(root: &Path, max: usize) -> Vec<PathBuf> {
@@ -913,6 +1064,54 @@ mod tests {
         assert_eq!(parse_listening_pid(all, 3080), None);
     }
 
+    // ---------- P2-2：/proc 直读的解析纯函数（Linux 集成靠 /proc 本身，解析逻辑跨平台可测） ----------
+
+    /// tcp 表行：LISTEN(0A) 且端口匹配 → inode；端口不匹配 / 非 LISTEN / 头行 → None。
+    #[test]
+    fn tcp_line_inode_parsing() {
+        // 列序：sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+        let listen_3080 =
+            "   0: 0100007F:0C08 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 123456 1 4";
+        assert_eq!(
+            tcp_line_inode(listen_3080, "0C08").as_deref(),
+            Some("123456"),
+            "LISTEN + 端口 3080 应命中 inode"
+        );
+        assert_eq!(tcp_line_inode(listen_3080, "0C09"), None, "端口不符应跳过");
+        assert_eq!(tcp_line_inode(listen_3080, "0c08").as_deref(), Some("123456"), "端口 hex 大小写不敏感");
+
+        // st = 01（ESTABLISHED）不是 LISTEN
+        let established =
+            "   1: 0100007F:0C08 0100007F:1F90 01 00000000:00000000 00:00000000 00000000     0        0 654321 1 4";
+        assert_eq!(tcp_line_inode(established, "0C08"), None, "非 LISTEN 不应命中");
+
+        // 表头行
+        assert_eq!(tcp_line_inode("  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode", "0C08"), None);
+    }
+
+    /// stat 行解析：常规、comm 含空格/括号、僵尸进程三类边界。
+    #[test]
+    fn proc_stat_parsing() {
+        // 常规：pid 1234, comm node, state S, ppid 1
+        let plain = "1234 (node) S 1 1234 1234 0 -1 4194560 123 0 0 0 0 0 0 0 20 0 1 0";
+        let (pid, ppid, comm) = parse_proc_stat(plain).unwrap();
+        assert_eq!((pid, ppid), (1234, 1));
+        assert_eq!(comm, "node");
+
+        // comm 含空格：`/usr/bin/foo bar` 之类（真实 comm 允许空格）
+        let spaced = "5678 (my proc) S 2 5678 5678 0 -1 4194560 123 0 0 0 0 0 0 0 20 0 1 0";
+        let (pid, ppid, comm) = parse_proc_stat(spaced).unwrap();
+        assert_eq!((pid, ppid), (5678, 2));
+        assert_eq!(comm, "my proc", "comm 含空格必须整体保留");
+
+        // 僵尸：state Z → None（跳过，避免污染孤儿判断）
+        let zombie = "9999 (defunct) Z 1 9999 9999 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_stat(zombie), None, "僵尸进程应被跳过");
+
+        // 畸形行
+        assert_eq!(parse_proc_stat("not a stat line"), None);
+    }
+
     #[test]
     fn patch_entry_removal() {
         let patch = "- id: a\n  config: {}\n- id: b\n  src: file:///gone\n- id: c\n  x: 1\n";
@@ -969,11 +1168,23 @@ mod tests {
 
     #[test]
     fn dsh_process_name_matching() {
-        assert!(name_matches_dsh("node.exe"));
-        assert!(name_matches_dsh("dsh.exe"));
-        assert!(name_matches_dsh("dsh.cmd"));
-        assert!(!name_matches_dsh("cmd.exe"));
-        assert!(!name_matches_dsh("powershell.exe"));
+        // 平台相关进程名：Windows 带 .exe/.cmd 后缀，Unix 无后缀
+        #[cfg(target_os = "windows")]
+        {
+            assert!(name_matches_dsh("node.exe"));
+            assert!(name_matches_dsh("dsh.exe"));
+            assert!(name_matches_dsh("dsh.cmd"));
+            assert!(!name_matches_dsh("cmd.exe"));
+            assert!(!name_matches_dsh("powershell.exe"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(name_matches_dsh("node"));
+            assert!(name_matches_dsh("dsh"));
+            assert!(!name_matches_dsh("node.exe")); // Unix 只认无后缀名
+            assert!(!name_matches_dsh("cmd.exe"));
+            assert!(!name_matches_dsh("powershell.exe"));
+        }
         assert!(!name_matches_dsh(""));
     }
 }

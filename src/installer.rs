@@ -159,8 +159,20 @@ pub fn npm_prefix() -> Option<PathBuf> {
 
 fn compute_npm_prefix() -> Option<PathBuf> {
     let npm = find_in(&base_dirs(), "npm")?;
-    let mut cmd = std::process::Command::new(&npm);
-    cmd.args(["prefix", "-g"]);
+    // Windows：npm 是 .cmd，CreateProcess 不能直接执行 → cmd /C 包装；
+    // Unix：npm 是可执行脚本，直接跑。
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(&npm).arg("prefix").arg("-g");
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = std::process::Command::new(&npm);
+        c.arg("prefix").arg("-g");
+        c
+    };
     crate::supervisor::hide_window(&mut cmd);
     let out = cmd.output().ok()?;
     if !out.status.success() {
@@ -177,15 +189,34 @@ fn compute_npm_prefix() -> Option<PathBuf> {
 static NPMPFX_CACHE: OnceLock<Mutex<Option<(std::time::Instant, PathBuf)>>> = OnceLock::new();
 
 fn find_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let exts = [".exe", ".cmd", ".bat", ""];
+    #[cfg(not(target_os = "windows"))]
+    let exts = [""];
     for dir in dirs {
-        for ext in [".exe", ".cmd", ".bat", ""] {
+        for ext in exts {
             let p = dir.join(format!("{name}{ext}"));
-            if p.is_file() {
+            if p.is_file() && is_executable(&p) {
                 return Some(p);
             }
         }
     }
     None
+}
+
+/// 可执行性判定：Windows 有扩展名即可（.cmd/.exe 等）；Unix 需 x 位（access X_OK）。
+#[cfg(target_os = "windows")]
+fn is_executable(_p: &std::path::Path) -> bool {
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_executable(p: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok();
+    let Some(c) = c else { return false };
+    // SAFETY: c 是合法 NUL 结尾路径；access 只读探测，不修改状态
+    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
 }
 
 /// 在合并 PATH 里找可执行命令（.exe/.cmd/.bat/无扩展名）。
@@ -240,15 +271,12 @@ pub fn probe() -> serde_json::Value {
     probe_uncached()
 }
 
-/// 安装完成后使探测/路径/版本缓存失效（node/dsh 刚装好/更新，需重探测）。
+/// 安装完成后使探测/路径缓存失效（node/dsh 刚装好/更新，需重探测）。
 pub fn invalidate_cache() {
     if let Ok(mut g) = PROBE_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *g = None;
     }
     if let Ok(mut g) = NPMPFX_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        *g = None;
-    }
-    if let Ok(mut g) = NPM_VIEW_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *g = None;
     }
 }
@@ -274,16 +302,9 @@ pub fn start_install(kind: &str) -> Result<(), String> {
     let kind = kind.to_string();
     start_install_boxed(kind.clone(), move || match kind.as_str() {
         "node" => install_node(),
-        "dsh" => install_dsh(None),
+        "dsh" => install_dsh(),
         other => (false, format!("未知安装目标: {other}")),
     })
-}
-
-/// 触发 dsh 安装/更新/指定版本（spec：`latest` 强制更新到最新；`0.1.0-rc.5` 装指定版本）。
-/// 复用同一安装单任务 slot（安装中互斥）。
-pub fn start_dsh_install(spec: &str) -> Result<(), String> {
-    let spec = spec.to_string();
-    start_install_boxed("dsh".to_string(), move || install_dsh(Some(&spec)))
 }
 
 fn start_install_boxed(
@@ -315,57 +336,110 @@ fn start_install_boxed(
     Ok(())
 }
 
-/// winget 静默安装 Node.js LTS。返回 (成功?, 结果文案)。
+/// 安装 Node.js（平台化）：
+/// - Windows：winget 静默安装 Node.js LTS。
+/// - Linux：apt（有 sudo 时装 nodejs/npm）；macOS：brew（有 brew 时装 node）。
+/// 无可用包管理器 → 提示手动安装（返回失败，管理页展示）。
 fn install_node() -> (bool, String) {
     if node_installed() {
         return (true, "Node.js 已安装，无需重复安装".to_string());
     }
-    let Some(winget) = which("winget") else {
-        return (
-            false,
-            "未找到 winget。请手动安装 Node.js（https://nodejs.org 下载 LTS 安装包），装完刷新管理页。".to_string(),
-        );
-    };
-    let mut cmd = std::process::Command::new(&winget);
-    cmd.args([
-        "install", "-e", "--id", "OpenJS.NodeJS.LTS",
-        "--silent", "--accept-package-agreements", "--accept-source-agreements",
-        "--disable-interactivity",
-    ]);
-    crate::supervisor::hide_window(&mut cmd);
-    match cmd.output() {
-        Ok(out) => {
-            let tail = tail_text(&out.stdout, &out.stderr);
-            if out.status.success() && node_installed() {
-                (true, format!("Node.js 安装成功。{tail}"))
-            } else {
-                (
-                    false,
-                    format!("Node.js 安装失败（退出码 {:?}）。{tail}", out.status.code()),
-                )
+    #[cfg(target_os = "windows")]
+    {
+        let Some(winget) = which("winget") else {
+            return (
+                false,
+                "未找到 winget。请手动安装 Node.js（https://nodejs.org 下载 LTS 安装包），装完刷新管理页。".to_string(),
+            );
+        };
+        let mut cmd = std::process::Command::new(&winget);
+        cmd.args([
+            "install", "-e", "--id", "OpenJS.NodeJS.LTS",
+            "--silent", "--accept-package-agreements", "--accept-source-agreements",
+            "--disable-interactivity",
+        ]);
+        crate::supervisor::hide_window(&mut cmd);
+        match cmd.output() {
+            Ok(out) => {
+                let tail = tail_text(&out.stdout, &out.stderr);
+                if out.status.success() && node_installed() {
+                    (true, format!("Node.js 安装成功。{tail}"))
+                } else {
+                    (
+                        false,
+                        format!("Node.js 安装失败（退出码 {:?}）。{tail}", out.status.code()),
+                    )
+                }
             }
+            Err(e) => (false, format!("无法启动 winget: {e}")),
         }
-        Err(e) => (false, format!("无法启动 winget: {e}")),
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if which("apt").is_some() {
+            let mut cmd = std::process::Command::new("apt");
+            cmd.args(["install", "-y", "nodejs", "npm"]);
+            match cmd.output() {
+                Ok(out) => {
+                    let tail = tail_text(&out.stdout, &out.stderr);
+                    if out.status.success() && node_installed() {
+                        (true, format!("Node.js 安装成功（apt）。{tail}"))
+                    } else {
+                        (
+                            false,
+                            format!("Node.js 安装失败（apt，退出码 {:?}）。{tail}", out.status.code()),
+                        )
+                    }
+                }
+                Err(e) => (false, format!("无法启动 apt: {e}")),
+            }
+        } else {
+            (
+                false,
+                "未找到包管理器（winget 是 Windows 专用，本机也无 apt）。请手动安装 Node.js 后刷新管理页。".to_string(),
+            )
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if which("brew").is_some() {
+            let mut cmd = std::process::Command::new("brew");
+            cmd.args(["install", "node"]);
+            match cmd.output() {
+                Ok(out) => {
+                    let tail = tail_text(&out.stdout, &out.stderr);
+                    if out.status.success() && node_installed() {
+                        (true, format!("Node.js 安装成功（brew）。{tail}"))
+                    } else {
+                        (
+                            false,
+                            format!("Node.js 安装失败（brew，退出码 {:?}）。{tail}", out.status.code()),
+                        )
+                    }
+                }
+                Err(e) => (false, format!("无法启动 brew: {e}")),
+            }
+        } else {
+            (
+                false,
+                "未找到包管理器（brew）。请手动安装 Node.js（https://nodejs.org）后刷新管理页。".to_string(),
+            )
+        }
     }
 }
 
 /// 安装/更新/退回 dsh（npm install -g）。
-/// `spec`：None=缺省安装（已装则跳过）；Some("latest")=强制更新到最新；Some(版本号)=装指定版本。
+/// 安装最新版 dsh（已装则跳过）。
 /// 关键修复（2026-08-20）：npm 必须用「与 dsh 命令同目录」的那一个——否则 npm install -g 会装到
-/// %AppData%\npm，而 PATH 里另一套 node 生态的 dsh 排前面，导致「装完版本没变」；装完还要
-/// **验证 dsh --version == 目标**才算成功，不再被 PATH 里旧 dsh 掩盖（旧判断只查存在，恒误报成功）。
-fn install_dsh(spec: Option<&str>) -> (bool, String) {
+/// %AppData%\npm，而 PATH 里另一套 node 生态的 dsh 排前面，导致「装完版本没变」。
+fn install_dsh() -> (bool, String) {
     if !npm_installed() {
         return (false, "未找到 npm，请先安装 Node.js（管理页「安装 Node」）".to_string());
     }
-    if spec.is_none() && dsh_installed() {
+    if dsh_installed() {
         return (true, "dsh 已安装，无需重复安装".to_string());
     }
-    // None → 装默认 latest；Some(spec) → @latest 或 @<版本号>
-    let pkg = match spec {
-        None => "@deepseek-ai/dsh".to_string(),
-        Some(s) => format!("@deepseek-ai/dsh@{s}"),
-    };
+    let pkg = "@deepseek-ai/dsh".to_string();
     let Some(npm) = npm_for_dsh().or_else(|| which("npm")) else {
         return (false, "未找到 npm 命令".to_string());
     };
@@ -390,136 +464,29 @@ fn install_dsh(spec: Option<&str>) -> (bool, String) {
                     ),
                 );
             }
-            // 版本验证：装完 dsh --version 应与目标一致（防 PATH 解析到旧 dsh 造成假成功）
-            let ver = version_of("dsh");
-            match spec {
-                Some(want) if want != "latest" && ver.as_deref() == Some(want) => (
-                    true,
-                    format!("dsh 更新成功（{pkg}，现为 {}）。{tail}", ver.unwrap_or_default()),
-                ),
-                Some(want) => (
-                    false,
-                    format!(
-                        "npm 安装结束但 dsh 版本未变为目标（当前 {:?}，期望 {want}；npm={}，dsh 解析自 {}）。{tail} 可能是 PATH 中另一套 node 生态的 dsh 排在前，请检查 PATH 或在终端执行 `npm uninstall -g @deepseek-ai/dsh` 后重试。",
-                        ver,
-                        npm.display(),
-                        which("dsh").map(|p| p.display().to_string()).unwrap_or_default()
-                    ),
-                ),
-                None => (true, format!("dsh 安装成功（{pkg}）。{tail}")),
-            }
+            (true, format!("dsh 安装成功（{pkg}）。{tail}"))
         }
         Err(e) => (false, format!("等待 npm 结束失败: {e}")),
     }
 }
 
-/// 与 dsh 命令同目录的 npm：确保 `npm install -g` 的落点就是 PATH 解析 `dsh` 的那个全局目录。
-/// （避免装到 %AppData%\npm 而 C:\tools\nodejs 等另一套 node 的 dsh 排前面 → 装完版本不变）
-fn npm_for_dsh() -> Option<PathBuf> {
+/// 与 dsh 命令同目录的 npm：确保 `npm install -g` / `npm uninstall -g` 的落点就是
+/// PATH 解析 `dsh` 的那个全局目录。
+/// （避免装到 %AppData%\npm 而 C:\tools\nodejs 等另一套 node 的 dsh 排前面 → 装完版本不变/卸不掉）
+pub fn npm_for_dsh() -> Option<PathBuf> {
     let dsh = which("dsh")?;
     let dir = dsh.parent()?;
-    for ext in [".exe", ".cmd", ""] {
+    #[cfg(target_os = "windows")]
+    let exts = [".exe", ".cmd", ""];
+    #[cfg(not(target_os = "windows"))]
+    let exts = [""];
+    for ext in exts {
         let p = dir.join(format!("npm{ext}"));
         if p.is_file() {
             return Some(p);
         }
     }
     None
-}
-
-// ---------- npm registry 版本查询（dsh 更新检查） ----------
-
-static NPM_VIEW_CACHE: OnceLock<Mutex<Option<(std::time::Instant, String, serde_json::Value)>>> =
-    OnceLock::new();
-
-/// `npm view @deepseek-ai/dsh <field>`（field: version=latest | versions=全部），60s TTL 缓存。
-/// 网络/命令失败 → None（UI 显示「查询失败/离线」）。
-fn npm_view(field: &str) -> Option<serde_json::Value> {
-    const TTL: Duration = Duration::from_secs(60);
-    let cache = NPM_VIEW_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(mut g) = cache.lock() {
-        // 缓存按 field 区分（version 是字符串、versions 是数组，不能共用一个槽）
-        if let Some((at, f, v)) = g.as_ref() {
-            if f == field && at.elapsed() < TTL {
-                return Some(v.clone());
-            }
-        }
-        let v = npm_view_uncached(field);
-        if let Some(vv) = &v {
-            *g = Some((std::time::Instant::now(), field.to_string(), vv.clone()));
-        }
-        return v;
-    }
-    npm_view_uncached(field)
-}
-
-fn npm_view_uncached(field: &str) -> Option<serde_json::Value> {
-    let npm = which("npm")?;
-    let mut cmd = std::process::Command::new(&npm);
-    cmd.args(["view", "@deepseek-ai/dsh", field]);
-    if field == "versions" || field == "dist-tags" {
-        cmd.arg("--json");
-    }
-    crate::supervisor::hide_window(&mut cmd);
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        return None;
-    }
-    if field == "versions" || field == "dist-tags" {
-        serde_json::from_str::<serde_json::Value>(&s).ok()
-    } else {
-        Some(serde_json::Value::String(s))
-    }
-}
-
-/// dsh 最新发布版 = 版本列表最后一项（rc 包的 dist-tag `latest` 常滞后于实际发布——
-/// 如 rc.8 已发布但 latest 仍指 rc.7）；列表不可得时退回 dist-tag latest。
-pub fn dsh_latest() -> Option<String> {
-    let versions = dsh_versions();
-    if let Some(v) = versions.last() {
-        return Some(v.clone());
-    }
-    npm_view("version").and_then(|v| v.as_str().map(String::from))
-}
-
-/// npm dist-tags（{latest, next, …}）：latest 是官方 stable tag，next 是预发布候选。
-pub fn dsh_dist_tags() -> serde_json::Value {
-    npm_view("dist-tags").unwrap_or(serde_json::Value::Null)
-}
-
-/// dsh 全部已发布版本（npm view versions，升序）。
-pub fn dsh_versions() -> Vec<String> {
-    npm_view("versions")
-        .and_then(|v| v.as_array().cloned())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default()
-}
-
-/// dsh 版本状态（管理页「dsh 版本」卡片）：
-/// current / latest（最新发布）/ latest_tag（npm stable tag）/ tags / has_update / versions。
-pub fn dsh_versions_json() -> serde_json::Value {
-    let current = version_of("dsh");
-    let latest = dsh_latest();
-    let tags = dsh_dist_tags();
-    let latest_tag = tags.get("latest").and_then(|v| v.as_str()).map(String::from);
-    let versions = dsh_versions();
-    let has_update = match (&latest, &current) {
-        (Some(l), Some(c)) => l != c,
-        (Some(_), None) => true, // 未安装 dsh（或探测失败）但有最新版
-        _ => false,
-    };
-    serde_json::json!({
-        "current": current,
-        "latest": latest,
-        "latest_tag": latest_tag,
-        "tags": tags,
-        "has_update": has_update,
-        "versions": versions,
-    })
 }
 
 /// stdout/stderr 尾部文本（各取末尾 300 字，去空行），用于错误回显。

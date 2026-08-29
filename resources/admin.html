@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="page.title">DSH 伴侣 · 管理</title>
+<style>
+:root{--ds:#4D6BFE;--ds-dark:#3a57e0;--bg:#F7F8FA;--card:#fff;--text:#1A1A1A;--muted:#6B7280;--border:#E5E7EB;--ok:#10B981;--bad:#EF4444;--warn:#F59E0B;--radius:16px;--shadow:0 1px 3px rgba(0,0,0,.06),0 4px 12px rgba(0,0,0,.04)}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;padding:24px 16px;background:var(--bg);color:var(--text);line-height:1.5}
+.wrap{max-width:840px;margin:0 auto}
+header{display:flex;align-items:center;gap:14px;margin-bottom:24px}
+header h1{font-size:22px;font-weight:600;margin:0;letter-spacing:-.3px}
+header p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.whale{width:42px;height:42px;flex-shrink:0;color:var(--ds)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h3{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 14px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center}
+.row.right{justify-content:flex-end;margin-top:8px}
+button{appearance:none;border:1px solid var(--border);background:#fff;color:var(--text);padding:8px 16px;border-radius:10px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s}
+button:hover{border-color:#cbd5e1;background:#f9fafb;transform:translateY(-1px)}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+button.primary{background:var(--ds);color:#fff;border-color:var(--ds)}
+button.primary:hover{background:var(--ds-dark);border-color:var(--ds-dark)}
+button.danger{color:var(--bad);border-color:#fecaca}
+button.danger:hover{background:#fef2f2}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.badge.ok{background:#d1fae5;color:#065f46}
+.badge.bad{background:#fee2e2;color:#991b1b}
+.badge.warn{background:#fef3c7;color:#92400e}
+.badge.muted{background:#f3f4f6;color:#4b5563}
+.status-big{font-size:18px;font-weight:600;margin-bottom:4px}
+.status-meta{color:var(--muted);font-size:13px}
+.env-line{display:flex;gap:24px;flex-wrap:wrap;font-size:13px}
+.env-item{display:flex;align-items:center;gap:6px}
+.env-item .dot{width:7px;height:7px;border-radius:50%}
+.env-item .dot.ok{background:var(--ok)}.env-item .dot.bad{background:var(--bad)}.env-item .dot.muted{background:#d1d5db}
+#toast{position:fixed;right:16px;bottom:16px;max-width:420px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:0 10px 25px rgba(0,0,0,.12);font-size:13px;z-index:50;transform:translateY(120%);transition:transform .25s;pointer-events:none}
+#toast.show{transform:translateY(0)}
+#toast.ok{border-left:4px solid var(--ok)}
+#toast.bad{border-left:4px solid var(--bad)}
+#toast.warn{border-left:4px solid var(--warn)}
+/* 操作状态条：异步任务（安装）的过程与结果反馈，与一次性 toast 分离 */
+#opbar{display:none;align-items:center;gap:12px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:-4px 0 16px;font-size:13px;box-shadow:var(--shadow)}
+#opbar.show{display:flex}
+#opbar.ok{border-left:4px solid var(--ok)}
+#opbar.bad{border-left:4px solid var(--bad)}
+#opbar .op-msg{font-weight:600}
+#opbar .op-sub{color:var(--muted);font-size:12px;margin-top:2px}
+.spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--ds);border-radius:50%;animation:spinner .8s linear infinite;flex-shrink:0}
+.spin.inline{width:12px;height:12px;vertical-align:-2px;display:inline-block}
+@keyframes spinner{to{transform:rotate(360deg)}}
+/* 卸载选项弹窗 */
+#modal{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:60;padding:16px}
+#modal.show{display:flex}
+.modal-card{background:#fff;border-radius:var(--radius);box-shadow:0 20px 50px rgba(0,0,0,.25);max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px}
+.modal-card h3{margin:0 0 6px;font-size:17px;font-weight:600}
+.modal-card .sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+.opt{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;gap:12px;align-items:flex-start}
+.opt.locked{background:#f8fafc;border-style:dashed}
+.opt input[type=checkbox]{margin-top:3px;accent-color:var(--bad);width:16px;height:16px}
+.opt .t{font-weight:600;font-size:13.5px}
+.opt .d{font-size:12px;color:var(--muted);margin-top:3px}
+.opt .tag{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;margin-left:6px}
+.opt .tag.must{background:#fee2e2;color:#991b1b}
+.opt .tag.danger{background:#fef3c7;color:#92400e}
+.modal-card .row{margin-top:18px}
+#uninstall-result{display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:12px}
+#uninstall-result .res-line{font-size:12.5px;color:#374151;padding:3px 0;border-bottom:1px dashed var(--border)}
+#uninstall-result .res-line:last-child{border-bottom:none}
+#uninstall-result .res-msg{font-weight:600;margin-bottom:8px}
+.res-msg.ok{color:#065f46}.res-msg.bad{color:#991b1b}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<svg class="whale" viewBox="0 0 50 50" fill="currentColor" aria-hidden="true"><path d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.9756 17.9707 37.4722 18.1035 37.9854C18.2026 38.376 18.4165 38.4878 18.7915 38.2715C19.1357 38.0718 19.2749 37.8164 19.3755 37.416C19.541 36.7998 19.7788 36.2158 20.1206 35.688C20.4214 35.2163 20.7529 34.7275 20.8687 34.2563C20.9565 33.9043 20.7471 33.5996 20.3931 33.5684C19.2695 33.4644 17.9121 33.7529 16.8706 34.104C16.8877 33.6875 16.9785 33.2007 16.8027 32.8394C16.647 32.5122 16.248 32.376 15.9233 32.4795C15.6289 32.5757 15.4048 32.8799 15.3633 33.2163C15.3169 33.6152 15.3398 34.064 15.3398 34.5366C15.3398 34.8315 15.2681 35.127 15.2261 35.42C15.1978 35.6108 15.1733 35.8887 15.2598 36.1206C15.2822 36.1792 15.3223 36.2402 15.3706 36.2798C15.5806 36.4565 15.9165 36.4326 16.0825 36.1431C16.5039 35.5283 16.8584 35.0049 17.2305 34.4482C17.313 34.3159 17.439 34.207 17.5522 34.0957C17.6045 34.0405 17.7275 33.9121 17.834 33.8398C17.9644 33.751 18.0649 33.583 18.1714 33.4917C18.3379 33.3438 18.5244 33.2124 18.7012 33.0791C18.8169 32.9917 19.0156 32.9521 19.0229 32.7676C19.0234 32.3359 19.0132 31.9683 19.1011 31.5601C19.2734 30.791 19.6445 30.0234 20.0713 29.4077C20.6567 28.5767 21.3184 27.854 21.9873 27.1035C23.4214 25.4883 24.9185 23.9126 26.3721 22.3022C27.4766 21.0806 28.7402 19.9927 29.8286 18.7676C30.8892 17.5757 31.98 16.3838 32.98 15.1362C33.5083 14.4878 34.0869 13.8545 34.603 13.1997C34.8916 12.84 35.2739 12.5356 35.54 12.1597C35.7129 11.9126 36.0098 11.7192 36.1548 11.44C36.4478 10.8799 36.6973 10.2637 36.9062 9.67188C37.0884 9.14355 37.4189 8.71973 37.7974 8.36768C38.4072 7.80029 39.1357 7.4209 39.8877 7.14404C40.5352 6.90332 41.1992 6.73682 41.877 6.62354C42.3115 6.55078 42.7896 6.3916 43.2354 6.375C44.6523 6.33545 46.0161 6.22363 47.3877 6.50439C47.7622 6.5835 48.1221 6.68799 48.4634 6.86377C49.1123 7.17676 49.6748 7.67285 49.9028 8.3999C50.0405 8.84717 50.0601 9.31152 50 9.78418C49.9585 10.1597 49.7822 10.4155 49.3887 10.4238C49.2095 10.4277 49.0024 10.4233 48.8354 10.0479Z"/></svg>
+<div>
+<h1 data-i18n="page.title">DSH 伴侣</h1>
+<p data-i18n="page.sub">DeepSeek Harness 本地守护 · 管理页</p>
+</div>
+</header>
+
+<div class="card">
+<h3 data-i18n="engine.card">dsh 引擎</h3>
+<div class="status-big" id="engStatus" data-i18n="loading">加载中…</div>
+<div class="status-meta" id="engMeta" data-i18n="wait.meta">等待状态端点响应</div>
+<div class="row">
+<button class="primary" id="btn-open" onclick="openDsh()" disabled data-i18n="btn.open">打开 dsh 界面</button>
+<button id="btn-start" onclick="act('start')" data-i18n="btn.start">启动 dsh</button>
+<button id="btn-stop" onclick="act('stop')" disabled data-i18n="btn.stop">关闭 dsh</button>
+<button id="btn-restart" onclick="restartDsh()" disabled data-i18n="btn.restart">重启 dsh</button>
+</div>
+</div>
+
+<!-- 操作状态条：异步安装的过程与结果（toast 只管一次性即时提示） -->
+<div id="opbar"></div>
+
+<div class="grid2">
+<div class="card">
+<h3 data-i18n="env.card">运行环境</h3>
+<div class="env-line" id="env" data-i18n="loading">加载中…</div>
+<div class="row">
+<button id="btn-node" onclick="act('install/node')" data-i18n="btn.node">安装 Node.js</button>
+<button id="btn-dsh" onclick="act('install/dsh')" data-i18n="btn.dsh">安装 dsh</button>
+</div>
+<div class="row">
+<button class="danger" onclick="uninstallDsh()" data-i18n="btn.uninstall">纯净卸载 dsh</button>
+<span style="font-size:12px;color:#888" data-i18n="btn.uninstall.hint">卸载系统 dsh（保留壳），可选清数据/残留 shim</span>
+</div>
+</div>
+
+<div class="card">
+<h3 data-i18n="daily.card">日常操作</h3>
+<div class="status-meta" data-i18n="daily.sub">插件管理、dsh 版本管理等日常操作请到 dsh 界面完成</div>
+<div class="status-meta" style="margin-top:6px" data-i18n="daily.features">dsh 界面已提供：插件市场与装卸、版本更新、工作台管理</div>
+<div class="row">
+<button class="primary" id="btn-open-daily" onclick="openDsh()" disabled data-i18n="daily.open">打开 dsh 界面</button>
+</div>
+<div class="status-meta" id="dailyHint" style="margin-top:8px" data-i18n="daily.hint">引擎就绪后即可打开；若引擎未运行请先在上方启动</div>
+</div>
+</div>
+
+<div id="toast"></div>
+
+<!-- 纯净卸载选项弹窗 -->
+<div id="modal" onclick="if(event.target===this)closeModal()">
+<div class="modal-card">
+<h3 data-i18n="m.uninstall.title">纯净卸载 dsh</h3>
+<p class="sub" data-i18n="m.uninstall.sub">停止引擎并执行 <code>npm uninstall -g @deepseek-ai/dsh</code>。DSH 伴侣（壳）保留，不受影响。勾选要一并清理的内容：</p>
+
+<div class="opt locked">
+<input type="checkbox" checked disabled>
+<div><span class="t"><span data-i18n="m.pkg">dsh 程序包</span> <span class="tag must" data-i18n="m.pkg.must">必清</span></span>
+<div class="d" data-i18n="m.pkg.d">npm 全局包 <code>@deepseek-ai/dsh</code>（这是卸载的主体，始终执行）</div></div>
+</div>
+
+<div class="opt">
+<input type="checkbox" id="opt-data">
+<div><span class="t"><span data-i18n="m.data">dsh 数据目录</span> <span class="tag danger" data-i18n="m.data.tag">谨慎</span></span>
+<div class="d" data-i18n="m.data.d">删除 <code>%USERPROFILE%\.dsh</code>：含登录凭据、配置文件、会话、工作台数据。不可恢复。</div></div>
+</div>
+
+<div class="opt">
+<input type="checkbox" id="opt-shim">
+<div><span class="t"><span data-i18n="m.shim">PATH 残留命令</span> <span class="tag danger" data-i18n="m.shim.tag">谨慎</span></span>
+<div class="d" data-i18n="m.shim.d">删除 PATH 中其他 node 全局目录里的 <code>dsh*</code> 命令（如 C:\tools\nodejs）。一般无需清理。</div></div>
+</div>
+
+<div class="row">
+<button onclick="closeModal()" data-i18n="btn.cancel">取消</button>
+<button class="danger" id="btn-uninstall-go" onclick="confirmUninstall()" data-i18n="btn.confirm">确认卸载</button>
+</div>
+
+<div id="uninstall-result"></div>
+</div>
+</div>
+</div>
+
+<script>
+// ---------- CSRF token（服务端注入；非 GET 请求自动携带） ----------
+// token 由壳在返回本页时替换 __DSH_CSRF_TOKEN__ 占位符写入，只出现在同源 HTML 里，
+// 跨域脚本读不到本页内容，因此无法窃取。所有非 GET 请求统一在此包装，无需逐处改写。
+const CSRF = "__DSH_CSRF_TOKEN__";
+(function(){
+  const _fetch = window.fetch.bind(window);
+  window.fetch = function(url, opt){
+    opt = opt || {};
+    const m = (opt.method || 'GET').toUpperCase();
+    if (m !== 'GET' && m !== 'HEAD') {
+      opt.headers = Object.assign({}, opt.headers, { 'X-DSH-Come-Token': CSRF });
+    }
+    return _fetch(url, opt);
+  };
+})();
+
+// ---------- 页面 i18n（P0：语言以 /api/status 的 lang 字段为准，回退浏览器语言） ----------
+const T = {
+  zh: {
+    'page.title':'DSH 伴侣','page.sub':'DeepSeek Harness 本地守护 · 管理页',
+    'engine.card':'dsh 引擎','env.card':'运行环境','daily.card':'日常操作',
+    'daily.sub':'插件管理、dsh 版本管理等日常操作请到 dsh 界面完成',
+    'daily.features':'dsh 界面已提供：插件市场与装卸、版本更新、工作台管理',
+    'daily.open':'打开 dsh 界面','daily.hint':'引擎就绪后即可打开；若引擎未运行请先在上方启动',
+    'btn.open':'打开 dsh 界面','btn.start':'启动 dsh','btn.stop':'关闭 dsh','btn.restart':'重启 dsh',
+    'btn.node':'安装 Node.js','btn.dsh':'安装 dsh',
+    'btn.uninstall':'纯净卸载 dsh','btn.uninstall.hint':'卸载系统 dsh（保留壳），可选清数据/残留 shim',
+    'btn.cancel':'取消','btn.confirm':'确认卸载',
+    'loading':'加载中…','wait.meta':'等待状态端点响应',
+    'st.running':'运行中','st.starting':'启动中','st.stopped':'已停止','st.connfail':'连接失败',
+    'st.ready.meta':'dsh 已就绪 · 端口 ','st.start.meta':'dsh 正在启动','st.err.meta':'上次错误：','st.off.meta':'dsh 未在运行','st.connfail.meta':'无法连接状态端点',
+    'env.notinstalled':'未安装','env.nodata':'不可用',
+    'm.uninstall.title':'纯净卸载 dsh',
+    'm.uninstall.sub':'停止引擎并执行 <code>npm uninstall -g @deepseek-ai/dsh</code>。DSH 伴侣（壳）保留，不受影响。勾选要一并清理的内容：',
+    'm.pkg':'dsh 程序包','m.pkg.must':'必清','m.pkg.d':'npm 全局包 <code>@deepseek-ai/dsh</code>（这是卸载的主体，始终执行）',
+    'm.data':'dsh 数据目录','m.data.tag':'谨慎','m.data.d':'删除 <code>%USERPROFILE%\.dsh</code>：含登录凭据、配置文件、会话、工作台数据。不可恢复。',
+    'm.shim':'PATH 残留命令','m.shim.tag':'谨慎','m.shim.d':'删除 PATH 中其他 node 全局目录里的 <code>dsh*</code> 命令（如 C:\tools\nodejs）。一般无需清理。',
+    'm.uninstalling':'正在卸载 dsh（停止引擎 → npm uninstall → 可选清理）…',
+    'm.done':'卸载完成','m.fail':'卸载失败：','m.unknown':'未知错误','m.details':'— 执行明细 —','m.reqfail':'卸载请求失败：',
+    'busy':'处理中…','reqfail':'请求失败：','restart.sent':'重启指令已下发','restart.fail':'重启失败：',
+    'installing':'正在安装「','installing2':'」…','elapsed':'已进行 ',
+    'install.ok':'安装成功','install.fail':'安装失败',
+  },
+  en: {
+    'page.title':'DSH Companion','page.sub':'DeepSeek Harness local daemon · admin',
+    'engine.card':'dsh engine','env.card':'Environment','daily.card':'Daily operations',
+    'daily.sub':'Plugin management, dsh version updates etc. are done in the dsh UI',
+    'daily.features':'The dsh UI provides: plugin marketplace & add/remove, version update, workbench',
+    'daily.open':'Open dsh UI','daily.hint':'Open it once the engine is ready; start the engine above first if it is not running.',
+    'btn.open':'Open dsh UI','btn.start':'Start dsh','btn.stop':'Stop dsh','btn.restart':'Restart dsh',
+    'btn.node':'Install Node.js','btn.dsh':'Install dsh',
+    'btn.uninstall':'Uninstall dsh','btn.uninstall.hint':'Uninstalls system dsh (the shell stays). Optionally remove data / leftover shims.',
+    'btn.cancel':'Cancel','btn.confirm':'Confirm uninstall',
+    'loading':'Loading…','wait.meta':'Waiting for the status endpoint',
+    'st.running':'Running','st.starting':'Starting','st.stopped':'Stopped','st.connfail':'Connection failed',
+    'st.ready.meta':'dsh ready · port ','st.start.meta':'dsh is starting','st.err.meta':'Last error: ','st.off.meta':'dsh is not running','st.connfail.meta':'Cannot reach the status endpoint',
+    'env.notinstalled':'not installed','env.nodata':'unavailable',
+    'm.uninstall.title':'Uninstall dsh',
+    'm.uninstall.sub':'Stops the engine and runs <code>npm uninstall -g @deepseek-ai/dsh</code>. DSH Companion (the shell) is kept. Check what to remove as well:',
+    'm.pkg':'dsh package','m.pkg.must':'always','m.pkg.d':'npm global package <code>@deepseek-ai/dsh</code> (the main target; always removed)',
+    'm.data':'dsh data directory','m.data.tag':'careful','m.data.d':'Deletes <code>%USERPROFILE%\.dsh</code>: credentials, config, sessions, workbench data. Not recoverable.',
+    'm.shim':'PATH leftovers','m.shim.tag':'careful','m.shim.d':'Removes <code>dsh*</code> commands from other node global dirs in PATH (e.g. C:\tools\nodejs). Usually not needed.',
+    'm.uninstalling':'Uninstalling dsh (stop engine → npm uninstall → optional cleanup)…',
+    'm.done':'Uninstall complete','m.fail':'Uninstall failed: ','m.unknown':'unknown error','m.details':'— details —','m.reqfail':'Uninstall request failed: ',
+    'busy':'Working…','reqfail':'Request failed: ','restart.sent':'Restart command sent','restart.fail':'Restart failed: ',
+    'installing':'Installing ','installing2':'…','elapsed':'elapsed ',
+    'install.ok':'Install succeeded','install.fail':'Install failed',
+  }
+};
+let LANG = (navigator.language || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
+let appliedLang = '';
+function t(k){ const d = T[LANG] || T.zh; return d[k] !== undefined ? d[k] : (T.zh[k] !== undefined ? T.zh[k] : k); }
+function applyI18n(){
+  if (appliedLang === LANG) return;
+  appliedLang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.innerHTML = t(el.getAttribute('data-i18n')); });
+}
+
+// ---------- 全局状态 ----------
+let DSPORT = 3080;
+let engReady = false;             // 引擎运行且就绪
+let installRunning = false;       // 是否有安装任务进行中（updateControls 依据）
+let engineBusy = false;           // refreshEngine 防重叠守卫
+let lastInstallSig = '';          // 上次 install 状态签名：仅变化时提示一次（防终态残留重复弹）
+let toastTimer = null;
+let opTimer = null;               // opbar 结果停留定时器
+let opTicker = null;              // opbar 进行中已用时长 ticker
+let opStartAt = 0;
+let opMsg = '';
+let enginePollTimer = null;
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function openDsh(){ window.open('http://127.0.0.1:'+DSPORT, '_blank'); }
+
+// ---------- 通用指令执行：busy 防重 + 结果 toast ----------
+function setBusy(btn, busy){
+  if (!btn) return;
+  if (busy){ if (!btn.dataset.orig) btn.dataset.orig = btn.innerHTML; btn.innerHTML = t('busy'); btn.disabled = true; }
+  else { if (btn.dataset.orig){ btn.innerHTML = btn.dataset.orig; delete btn.dataset.orig; } }
+}
+async function runAction(url, btn, then){
+  setBusy(btn, true);
+  try {
+    const r = await fetch(url,{method:'POST'});
+    const d = await r.json();
+    if (d.msg) flash(d.msg, d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  setBusy(btn, false);
+  if (then) await then();
+  updateControls();
+}
+function act(a){
+  const ids = { start:'btn-start', stop:'btn-stop', 'install/node':'btn-node', 'install/dsh':'btn-dsh' };
+  runAction('/api/'+a, document.getElementById(ids[a] || ''), () => { refreshEngine(); });
+}
+async function restartDsh(){
+  const btn = document.getElementById('btn-restart');
+  setBusy(btn, true);
+  try {
+    await fetch('/api/stop',{method:'POST'});
+    await new Promise(r => setTimeout(r, 400));   // 等引擎进程树终止
+    const r = await fetch('/api/start',{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || t('restart.sent'), d.ok !== false);
+  } catch(e){ flash(t('restart.fail')+e, false); }
+  setBusy(btn, false);
+  refreshEngine();
+}
+
+// ---------- 纯净卸载：选项式弹窗（默认只卸 npm 包） ----------
+async function uninstallDsh(){
+  const dataCk = document.getElementById('opt-data');
+  const shimCk = document.getElementById('opt-shim');
+  dataCk.checked = false; shimCk.checked = false;
+  const res = document.getElementById('uninstall-result');
+  res.style.display = 'none'; res.innerHTML = '';
+  document.getElementById('btn-uninstall-go').disabled = false;
+  document.getElementById('modal').classList.add('show');
+}
+function closeModal(){
+  document.getElementById('modal').classList.remove('show');
+}
+async function confirmUninstall(){
+  const goBtn = document.getElementById('btn-uninstall-go');
+  goBtn.disabled = true;
+  const keepData = !document.getElementById('opt-data').checked;
+  const cleanShim = document.getElementById('opt-shim').checked;
+  const qs = 'keepData=' + (keepData ? 1 : 0) + '&cleanShim=' + (cleanShim ? 1 : 0);
+  const res = document.getElementById('uninstall-result');
+  res.style.display = 'block';
+  res.innerHTML = '<div class="res-line"><span class="spin inline"></span> '+t('m.uninstalling')+'</div>';
+  try {
+    const r = await fetch('/api/dsh/uninstall?' + qs, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      res.innerHTML = '<div class="res-msg ok">'+t('m.done')+'</div>';
+    } else {
+      res.innerHTML = '<div class="res-msg bad">'+t('m.fail') + esc(d.msg || d.error || t('m.unknown')) + '</div>';
+    }
+    if (d.msg) res.innerHTML += '<div class="res-line">' + esc(d.msg) + '</div>';
+    if (d.steps && d.steps.length) {
+      res.innerHTML += '<div class="res-line">'+t('m.details')+'</div>';
+      d.steps.forEach(s => { res.innerHTML += '<div class="res-line">' + esc(s) + '</div>'; });
+    }
+    flash(d.msg, d.ok !== false);
+  } catch(e){ res.innerHTML = '<div class="res-msg bad">'+t('m.reqfail') + esc(e) + '</div>'; flash(t('m.reqfail')+e, false); }
+  finally { goBtn.disabled = false; }
+  refreshEngine();
+}
+
+// ---------- toast：一次性即时反馈（指令下发/请求失败/校验提示） ----------
+function flash(msg, ok){
+  const el = document.getElementById('toast');
+  el.className = ok === 'warn' ? 'warn' : (ok ? 'ok' : 'bad');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ok === 'warn' ? 4000 : (ok ? 5000 : 8000));
+}
+
+// ---------- 操作状态条（opbar）：异步安装的过程/结果反馈，与 toast 分离 ----------
+function hideOp(){
+  clearInterval(opTicker); clearTimeout(opTimer);
+  const bar = document.getElementById('opbar');
+  bar.className = ''; bar.innerHTML = '';
+}
+function opRunning(kind, msg){
+  opMsg = msg || ''; opStartAt = Date.now();
+  const bar = document.getElementById('opbar');
+  bar.className = 'show';
+  bar.innerHTML = '<span class="spin"></span><div><div class="op-msg">'+t('installing')+esc(kind)+t('installing2')+'</div><div class="op-sub"></div></div>';
+  const paint = () => {
+    const s = Math.max(0, Math.round((Date.now() - opStartAt) / 1000));
+    const sub = bar.querySelector('.op-sub');
+    if (sub) sub.textContent = (opMsg ? opMsg + ' · ' : '') + t('elapsed') + s + 's';
+  };
+  paint();
+  clearInterval(opTicker);
+  opTicker = setInterval(paint, 1000);
+}
+function opDone(ok, msg, hint){
+  clearInterval(opTicker);
+  const bar = document.getElementById('opbar');
+  bar.className = 'show ' + (ok ? 'ok' : 'bad');
+  bar.innerHTML = '<div class="op-msg">' + (ok ? '✓ ' : '✗ ') + esc(msg) + '</div>' + (hint ? '<div class="op-sub">'+esc(hint)+'</div>' : '');
+  clearTimeout(opTimer);
+  opTimer = setTimeout(hideOp, 8000);
+}
+
+// ---------- 集中式按钮可用性：引擎状态 + 安装运行中 双条件 ----------
+function updateControls(){
+  const byId = id => document.getElementById(id);
+  if (byId('btn-open')) byId('btn-open').disabled = !engReady;
+  if (byId('btn-open-daily')) byId('btn-open-daily').disabled = !engReady;
+  if (byId('btn-start')) byId('btn-start').disabled = engReady || installRunning;
+  if (byId('btn-stop')) byId('btn-stop').disabled = !engReady || installRunning;
+  if (byId('btn-restart')) byId('btn-restart').disabled = installRunning;
+  if (byId('btn-node')) byId('btn-node').disabled = installRunning;
+  if (byId('btn-dsh')) byId('btn-dsh').disabled = installRunning;
+}
+function fmtEnv(label, value, ok){
+  return '<div class="env-item"><span class="dot '+(ok?'ok':'bad')+'"></span><span>'+label+' '+value+'</span></div>';
+}
+
+// ---------- 引擎状态快刷（守护状态要实时） ----------
+function refreshEngine(){
+  if (engineBusy) return;   // 防与 2s 定时器/操作后即时刷新重叠
+  engineBusy = true;
+  return fetch('/api/status').then(r=>r.json()).then(d=>{
+    const e = d.eng||{};
+    if (d.lang && d.lang !== LANG) { LANG = d.lang; applyI18n(); }
+    if (e.port) DSPORT = e.port;
+    const running = !!e.running;
+    const ready = !!e.ready;
+    engReady = running && ready;
+    const big = document.getElementById('engStatus');
+    const meta = document.getElementById('engMeta');
+    if (running && ready) {
+      big.innerHTML = '<span class="badge ok">'+t('st.running')+'</span>';
+      meta.innerHTML = t('st.ready.meta')+e.port+(e.pid?' · PID '+e.pid:'')+(e.version?' · '+e.version:'');
+    } else if (running) {
+      big.innerHTML = '<span class="badge warn">'+t('st.starting')+'</span>';
+      meta.innerHTML = t('st.start.meta')+(e.stage?' · '+e.stage:'')+(e.pid?' · PID '+e.pid:'');
+    } else if (e.last_error) {
+      big.innerHTML = '<span class="badge bad">'+t('st.stopped')+'</span>';
+      meta.innerHTML = t('st.err.meta')+e.last_error;
+    } else {
+      big.innerHTML = '<span class="badge bad">'+t('st.stopped')+'</span>';
+      meta.innerHTML = t('st.off.meta');
+    }
+    const v = d.env||{};
+    document.getElementById('env').innerHTML =
+      fmtEnv('Node', v.node||t('env.notinstalled'), !!v.node)+
+      fmtEnv('npm', v.npm||t('env.notinstalled'), !!v.npm)+
+      fmtEnv('dsh', v.dsh||t('env.notinstalled'), !!v.dsh)+
+      fmtEnv('winget', v.winget||t('env.nodata'), !!v.winget);
+    handleInstall(d.install||{});
+    updateControls();
+  }).catch(()=>{
+    document.getElementById('engStatus').innerHTML = '<span class="badge bad">'+t('st.connfail')+'</span>';
+    document.getElementById('engMeta').textContent = t('st.connfail.meta');
+  }).finally(()=>{ engineBusy = false; });
+}
+// 安装状态机：仅在状态变化时提示一次（后端终态残留不会导致重复弹 toast）
+function handleInstall(ins){
+  installRunning = !!ins.running;
+  const sig = JSON.stringify([ins.kind || '', !!ins.running, ins.ok, ins.msg || '']);
+  if (sig === lastInstallSig) return;
+  lastInstallSig = sig;
+  if (ins.running) {
+    opRunning(ins.kind || '', ins.msg || '');
+  } else if (ins.kind) {
+    opDone(!!ins.ok, ins.msg || (ins.ok ? t('install.ok') : t('install.fail')));
+  } else {
+    hideOp();
+  }
+}
+
+refreshEngine();
+enginePollTimer = setInterval(refreshEngine, 2000);   // 引擎状态 2s（守护要实时）
+// 标签页隐藏时暂停轮询，恢复可见立即刷一次（省后台请求）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(enginePollTimer);
+    enginePollTimer = null;
+  } else {
+    if (!enginePollTimer) enginePollTimer = setInterval(refreshEngine, 2000);
+    refreshEngine();
+  }
+});
+</script>
+</body>
+</html>

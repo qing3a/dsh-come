@@ -1,6 +1,6 @@
 [package]
 name = "dsh-come"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "DSH 伴侣：把系统 dsh 变成双击即用的 Windows 桌面 App（直启系统 dsh + 崩溃自愈 + 托盘）"
 license = "MIT"
@@ -20,12 +20,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 notify-rust = "4"
 # Ctrl+C 优雅退出（--no-tray / 托盘降级无头模式）
 ctrlc = "3"
-# PNG 解码：加载 DeepSeek 托盘图标
-png = "0.17"
+# 自动更新：下载后 SHA256 校验（update.json 比对；无签名分发，HTTPS + 哈希防中间人）
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # 单实例锁（named mutex）+ 注册表 PATH 读取（installer 探测）
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Registry"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(unix)'.dependencies]
+# 进程组杀树（kill -pgid）、单实例 flock 锁、可执行位检测（access X_OK）
+libc = "0.2"
 
 [build-dependencies]
 # 把 resources/icon.ico 嵌入 exe（资源管理器/任务栏图标）

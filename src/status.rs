@@ -5,6 +5,7 @@
 //! - `GET /api/status`           → { eng: 守护状态, env: node/npm/dsh/winget 探测, install: 安装状态 }
 //! - `POST /api/install/node`    → 触发 winget 安装 Node.js（异步）
 //! - `POST /api/install/dsh`     → 触发 npm install -g @deepseek-ai/dsh（异步）
+//! - `POST /api/dsh/uninstall`   → 纯净卸载 dsh（同步；query: keepData=0/1, cleanShim=0/1）
 //! - `POST /api/start`           → 启动 dsh
 //! - `POST /api/stop`            → 关闭 dsh
 //! - `GET /api/install/status`   → 安装任务状态
@@ -13,41 +14,121 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
+
+use sha2::{Digest, Sha256};
 
 use crate::config::AppConfig;
 
-/// 启动管理页服务（阻塞线程内循环）。返回 Err 由调用方静默处理。
-pub fn serve(port: u16, cfg: AppConfig) -> std::io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
+/// 请求头读取上限（请求行 + 全部头）。超出直接 431，防止长 URL/巨型头耗尽内存。
+/// 64KB 对本地管理页绰绰有余（正常请求 < 2KB）。
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// 并发连接上限。本地管理页正常并发个位数；设上限防止本地洪水耗尽线程。
+const MAX_CONCURRENT_CONNS: usize = 32;
+
+/// CSRF token 请求头名（前端由 `window.fetch` 包装统一附加）。
+const CSRF_HEADER: &str = "x-dsh-come-token";
+
+/// CSRF token 占位符：服务端返回管理页 HTML 时替换为真实 token。
+/// token 只内嵌在同源 HTML 中，跨域脚本无法读取本页内容，因此无法窃取。
+const CSRF_PLACEHOLDER: &str = "__DSH_CSRF_TOKEN__";
+
+/// 运行期实际管理页端口（固定端口被占时回退为随机端口，见 `bind_any`）。
+/// 启动时绑定成功后写入；托盘菜单 / 向导据此打开管理页，不依赖配置里的期望值。
+static ADMIN_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
+
+/// 记录实际管理页端口（None = 管理页关闭/未启动）。
+pub fn set_admin_port(p: Option<u16>) {
+    if let Ok(mut g) = ADMIN_PORT.get_or_init(|| Mutex::new(None)).lock() {
+        *g = p;
+    }
+}
+
+/// 当前实际管理页端口；None = 关闭（status_port=0）或尚未绑定成功。
+pub fn admin_port() -> Option<u16> {
+    ADMIN_PORT
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|g| *g)
+}
+
+/// 绑定管理页监听：先试期望端口（status_port），被占则回退随机端口（bind 0）。
+/// 返回 (listener, 实际端口)。防与其他应用端口冲突导致管理页不可用。
+/// port=0 时直接要 ephemeral 端口。
+pub fn bind_any(port: u16) -> std::io::Result<(TcpListener, u16)> {
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => l,
+        Err(_) => TcpListener::bind(("127.0.0.1", 0))?,
+    };
+    let actual = listener.local_addr()?.port();
+    Ok((listener, actual))
+}
+
+/// 服务循环（监听器已由调用方 bind 好）：阻塞处理连接，失败静默（不阻塞主流程）。
+/// 当前活跃连接数（配合 `MAX_CONCURRENT_CONNS` 做并发闸门）。
+/// 用 AtomicUsize 而非 Semaphore：`std::sync::Semaphore` 至今仍是 unstable。
+static CONN_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn serve_listener(listener: TcpListener, cfg: AppConfig) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
+        // 并发闸门：本地工具也设上限，避免异常情况下无限 spawn 线程耗尽资源。
+        // 满额时直接关闭连接（背压），既不排队也不崩。
+        let n = CONN_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n >= MAX_CONCURRENT_CONNS {
+            CONN_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            continue;
+        }
         let cfg = cfg.clone();
-        std::thread::spawn(move || handle(&mut stream, &cfg));
+        std::thread::spawn(move || {
+            handle(&mut stream, &cfg);
+            CONN_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        });
     }
-    Ok(())
 }
 
 fn handle(stream: &mut TcpStream, cfg: &AppConfig) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
-    let mut buf = [0u8; 4096];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return,
-    };
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let mut lines = req.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("GET");
-    let path = parts.next().unwrap_or("/");
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
 
-    let (status, ctype, body) = route(method, path, cfg);
+    let (status, ctype, body) = match read_request_head(stream) {
+        Ok(head) => {
+            let (method, path, headers) = parse_head(&head);
+            // 写操作（非 GET/HEAD）必须同时通过 Host + Origin + CSRF token 校验。
+            // localhost 不是安全边界：浏览器对 127.0.0.1:port 的**简单请求**
+            //（POST 且无自定义头）不触发 preflight，请求会直接发出去。
+            // 响应读不到也无所谓——副作用（卸载 dsh / 删 ~/.dsh / 停引擎）已经发生。
+            if !is_safe_method(method)
+                && !is_same_origin_local(admin_port().unwrap_or(cfg.status_port), &headers)
+            {
+                (
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    err_json(crate::i18n::tr(
+                        "已拒绝跨站请求：仅接受来自本管理页的操作",
+                        "Cross-site request rejected: only requests from this admin page are accepted",
+                    )),
+                )
+            } else {
+                route(method, path, cfg)
+            }
+        }
+        Err(HeadError::TooLarge) => (
+            "431 Request Header Fields Too Large",
+            "text/plain; charset=utf-8",
+            "request header too large".to_string(),
+        ),
+        Err(HeadError::Incomplete) => (
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "bad request".to_string(),
+        ),
+    };
+
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{}",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nVary: Origin\r\n\r\n{}",
         body.len(),
         body
     );
@@ -55,62 +136,153 @@ fn handle(stream: &mut TcpStream, cfg: &AppConfig) {
     let _ = stream.flush();
 }
 
+/// 请求头读取失败原因。
+enum HeadError {
+    /// 头超过 `MAX_HEADER_BYTES`
+    TooLarge,
+    /// 连接关闭 / 读错，且未收到任何数据
+    Incomplete,
+}
+
+/// 循环读到请求头结束标记 `\r\n\r\n`。
+/// 单次 `read` 不可靠：TCP 可能分片，长 URL（如 `/api/plugin/install?src=<长路径>`）
+/// 会被截断成半个路径，表现为莫名其妙的 404。
+fn read_request_head(stream: &mut TcpStream) -> Result<String, HeadError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                // 分隔符最多跨越「上一轮尾部 3 字节 + 本轮开头」，只需回看 3 字节
+                let scan_from = buf.len().saturating_sub(3);
+                buf.extend_from_slice(&chunk[..n]);
+                if buf[scan_from..].windows(4).any(|w| w == b"\r\n\r\n") {
+                    return Ok(String::from_utf8_lossy(&buf).into_owned());
+                }
+                if buf.len() > MAX_HEADER_BYTES {
+                    return Err(HeadError::TooLarge);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if buf.is_empty() {
+        Err(HeadError::Incomplete)
+    } else {
+        // 对端发完就关（无空行）：尽力解析，让 route 给出 404 而非静默断连
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+/// 解析请求头 → (method, path, headers)。header 名统一小写便于查找。
+fn parse_head(head: &str) -> (&str, &str, Vec<(String, &str)>) {
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("GET");
+    let path = parts.next().unwrap_or("/");
+
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_ascii_lowercase(), v.trim()));
+        }
+    }
+    (method, path, headers)
+}
+
+fn is_safe_method(m: &str) -> bool {
+    matches!(m, "GET" | "HEAD")
+}
+
+fn header<'a>(headers: &'a [(String, &str)], key: &str) -> Option<&'a str> {
+    headers.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+}
+
+/// 非安全方法的来源校验：Host + Origin + CSRF token 三者全中才放行。
+/// - **Host**：防 DNS rebinding。攻击者域名解析到 127.0.0.1 时，浏览器填的 Host
+///   是攻击者域名而非 `127.0.0.1:port`，据此拒绝。
+/// - **Origin**：必须**存在**且匹配。现代浏览器同源 fetch 必带 Origin；
+///   缺失即视为非本页发起（`<img>`/`<script>` 等标签的 GET 本就无 Origin）。
+/// - **CSRF token**：即使前两项被绕过（如某些代理/扩展改写头），没有 token 仍无法执行。
+fn is_same_origin_local(port: u16, headers: &[(String, &str)]) -> bool {
+    let hosts = ["127.0.0.1", "localhost"];
+
+    let host_ok = header(headers, "host")
+        .map(|v| hosts.iter().any(|h| v.eq_ignore_ascii_case(&format!("{h}:{port}"))))
+        .unwrap_or(false);
+    let origin_ok = header(headers, "origin")
+        .map(|v| {
+            hosts
+                .iter()
+                .any(|h| v.eq_ignore_ascii_case(&format!("http://{h}:{port}")))
+        })
+        .unwrap_or(false);
+    let token_ok = header(headers, CSRF_HEADER)
+        .map(|v| v == csrf_token())
+        .unwrap_or(false);
+
+    host_ok && origin_ok && token_ok
+}
+
+/// 进程级 CSRF token：注入管理页 HTML，非安全方法需回传比对。
+/// 由 pid + 纳秒时间戳 + 管理页端口混合后取 SHA256；本机单机场景下不可预测。
+fn csrf_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut h = Sha256::new();
+        h.update(
+            format!(
+                "dsh-come:{}:{}:{}",
+                std::process::id(),
+                nanos,
+                admin_port().unwrap_or(0)
+            )
+            .as_bytes(),
+        );
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    })
+}
+
 fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static str, String) {
     match (method, path) {
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", admin_html()),
-        ("GET", "/api/status") => ("200 OK", "application/json; charset=utf-8", status_json()),
-        ("GET", "/api/plugins") => ("200 OK", "application/json; charset=utf-8", plugins_json()),
-        ("GET", "/api/dsh/versions") => (
-            "200 OK",
-            "application/json; charset=utf-8",
-            crate::installer::dsh_versions_json().to_string(),
-        ),
-        ("POST", "/api/dsh/update") => match crate::installer::dsh_latest() {
-            Some(v) => match crate::installer::start_dsh_install(&v) {
-                Ok(()) => ok_json(&format!("已触发更新到 {v}（异步进行，稍后刷新查看结果）")),
-                Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
-            },
-            None => (
-                "502 Bad Gateway",
-                "application/json; charset=utf-8",
-                err_json("无法查询 dsh 最新版本（网络或 npm 异常），更新失败"),
-            ),
-        },
-        ("POST", path) if path.starts_with("/api/dsh/install-version/") => {
-            let ver = &path["/api/dsh/install-version/".len()..];
-            if ver.is_empty() {
-                ("400 Bad Request", "application/json; charset=utf-8", err_json("缺少版本号"))
-            } else {
-                match crate::installer::start_dsh_install(ver) {
-                    Ok(()) => ok_json(&format!("已触发安装 dsh@{ver}（异步进行，稍后刷新查看结果）")),
-                    Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
-                }
-            }
-        }
-        ("POST", path) if path.starts_with("/api/plugin/uninstall/") => {
-            let id = &path["/api/plugin/uninstall/".len()..];
-            if id.is_empty() {
-                ("400 Bad Request", "application/json; charset=utf-8", err_json("缺少插件 id"))
-            } else {
-                match uninstall_plugin(id) {
-                    Ok(msg) => ok_json(&msg),
-                    Err(e) => ("400 Bad Request", "application/json; charset=utf-8", err_json(&e)),
-                }
-            }
-        }
+        ("GET", "/api/status") => ("200 OK", "application/json; charset=utf-8", status_json(cfg)),
         ("GET", "/api/install/status") => (
             "200 OK",
             "application/json; charset=utf-8",
             serde_json::to_string(&crate::installer::install_state()).unwrap_or_else(|_| "{}".into()),
         ),
+        // 纯净卸载 dsh（不动壳）：keepData=0 → 连 %USERPROFILE%\.dsh 一起删（默认保数据）；
+        // cleanShim=1 → 连 PATH 残留 shim 一起删（默认不删）。同步执行，返回完整卸载报告。
+        // 注意：前端会带 query（?keepData=…&cleanShim=…），必须 starts_with 匹配而非精确匹配。
+        ("POST", path) if path == "/api/dsh/uninstall" || path.starts_with("/api/dsh/uninstall?") => {
+            let keep_data = query_flag(path, "keepData", true);
+            let clean_shim = query_flag(path, "cleanShim", false);
+            let report = crate::uninstall::run_uninstall(keep_data, clean_shim);
+            let body = serde_json::to_string(&report).unwrap_or_else(|_| err_json(&report.msg));
+            if report.ok {
+                ("200 OK", "application/json; charset=utf-8", body)
+            } else {
+                ("409 Conflict", "application/json; charset=utf-8", body)
+            }
+        }
         ("POST", "/api/install/node") => install_json("node"),
         ("POST", "/api/install/dsh") => install_json("dsh"),
         ("POST", "/api/start") => match crate::supervisor::start(cfg) {
-            Ok(()) => ok_json("启动指令已下发"),
+            Ok(()) => ok_json(crate::i18n::tr("启动指令已下发", "Start command sent")),
             Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&e)),
         },
         ("POST", "/api/stop") => match crate::supervisor::stop() {
-            Ok(()) => ok_json("关闭指令已下发"),
+            Ok(()) => ok_json(crate::i18n::tr("关闭指令已下发", "Stop command sent")),
             Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&e)),
         },
         _ => ("404 Not Found", "text/plain; charset=utf-8", "not found".to_string()),
@@ -119,8 +291,300 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
 
 fn install_json(kind: &str) -> (&'static str, &'static str, String) {
     match crate::installer::start_install(kind) {
-        Ok(()) => ok_json(&format!("已触发安装 {}（异步进行，稍后刷新查看结果）", kind)),
+        Ok(()) => ok_json(&format!(
+            "{} {kind}（{}）",
+            crate::i18n::tr("已触发安装", "Install triggered for"),
+            crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+        )),
         Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+    }
+}
+
+/// 从请求 path 的 query 里解析布尔参数：`?keepData=0` / `?cleanShim=1`。
+/// 缺失或无法解析 → 用 default。
+fn query_flag(path: &str, key: &str, default: bool) -> bool {
+    let Some(qi) = path.find('?') else {
+        return default;
+    };
+    for pair in path[qi + 1..].split('&') {
+        let mut it = pair.splitn(2, '=');
+        if it.next() == Some(key) {
+            match it.next() {
+                Some("1" | "true" | "yes") => return true,
+                Some("0" | "false" | "no") => return false,
+                _ => return default,
+            }
+        }
+    }
+    default
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_flag_parses() {
+        assert!(query_flag("/api/dsh/uninstall?cleanShim=1", "cleanShim", false));
+        assert!(query_flag("/api/dsh/uninstall?keepData=0&cleanShim=1", "cleanShim", false));
+        assert!(!query_flag("/api/dsh/uninstall?keepData=0", "keepData", true));
+        assert!(!query_flag("/api/dsh/uninstall?cleanShim=0", "cleanShim", true));
+        // 缺失 → 默认值
+        assert!(query_flag("/api/dsh/uninstall", "keepData", true));
+        assert!(!query_flag("/api/dsh/uninstall?keepData=1", "cleanShim", false));
+        // 非法值 → 默认值
+        assert!(query_flag("/api/dsh/uninstall?keepData=maybe", "keepData", true));
+        assert!(!query_flag("/api/dsh/uninstall?cleanShim=maybe", "cleanShim", false));
+    }
+
+    /// bind_any(0)：OS 分配随机端口，返回的端口应 >0。
+    #[test]
+    fn bind_any_returns_ephemeral() {
+        let (l, p) = bind_any(0).unwrap();
+        assert!(p > 0, "随机端口应 >0，实际 {p}");
+        drop(l);
+    }
+
+    /// 期望端口被占 → 自动回退到另一个端口（防与其他应用冲突）。
+    #[test]
+    fn bind_any_falls_back_when_taken() {
+        let (l1, p1) = bind_any(0).unwrap(); // 占住 p1
+        let (l2, p2) = bind_any(p1).unwrap(); // 请求 p1（被占）→ 应回退
+        assert_ne!(p1, p2, "被占端口应回退到别的端口");
+        assert!(p2 > 0);
+        drop(l1);
+        drop(l2);
+    }
+
+    /// 期望端口空闲 → 直接用期望端口（不回退）。
+    #[test]
+    fn bind_any_keeps_free_port() {
+        let (l1, p1) = bind_any(0).unwrap();
+        drop(l1); // 释放后 p1 空闲
+        let (l2, p2) = bind_any(p1).unwrap();
+        assert_eq!(p1, p2, "空闲端口应直接用期望值");
+        drop(l2);
+    }
+
+    // ---------- P0-1：写请求的来源校验（Host + Origin + CSRF token） ----------
+
+    fn hdrs<'a>(items: &'a [(&'a str, &'a str)]) -> Vec<(String, &'a str)> {
+        items.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
+    /// 基准：本管理页发出的、带正确 token 的写请求应放行。
+    #[test]
+    fn write_request_from_admin_page_is_allowed() {
+        let tok = csrf_token().to_string();
+        for host in ["127.0.0.1", "localhost"] {
+            let host_h = format!("{host}:3081");
+            let origin_v = format!("http://{host}:3081");
+            let raw = [
+                ("host", host_h.as_str()),
+                ("origin", origin_v.as_str()),
+                (CSRF_HEADER, tok.as_str()),
+            ];
+            let h = hdrs(&raw);
+            assert!(is_same_origin_local(3081, &h), "{host} 来源应放行");
+        }
+    }
+
+    /// 任意网页发起的 POST（无 Origin/Host/token）必须被拒绝——这是 P0-1 的核心场景。
+    #[test]
+    fn cross_site_write_without_headers_is_rejected() {
+        // 浏览器对 127.0.0.1 的简单 POST 不触发 preflight，请求会直接到达。
+        // 三者缺一即拒，不能因为「都在本机」就放行。
+        let empty: [(&str, &str); 0] = [];
+        assert!(!is_same_origin_local(3081, &hdrs(&empty)));
+
+        let only_host = [("host", "127.0.0.1:3081")];
+        assert!(!is_same_origin_local(3081, &hdrs(&only_host)));
+
+        let only_origin = [("origin", "http://127.0.0.1:3081")];
+        assert!(!is_same_origin_local(3081, &hdrs(&only_origin)));
+
+        let only_token = [(CSRF_HEADER, csrf_token())];
+        assert!(!is_same_origin_local(3081, &hdrs(&only_token)));
+    }
+
+    /// DNS rebinding：攻击者域名解析到 127.0.0.1，浏览器填的 Host 仍是攻击者域名。
+    #[test]
+    fn dns_rebinding_host_is_rejected() {
+        let tok = csrf_token().to_string();
+        let evil = [
+            ("host", "evil.example.com:3081"),
+            ("origin", "http://evil.example.com:3081"),
+            (CSRF_HEADER, tok.as_str()),
+        ];
+        assert!(!is_same_origin_local(3081, &hdrs(&evil)), "外部 Host 必须拒绝");
+
+        // 混合：Origin 对但 Host 不对（代理改写场景）同样拒绝
+        let mixed = [
+            ("host", "evil.example.com:3081"),
+            ("origin", "http://127.0.0.1:3081"),
+            (CSRF_HEADER, tok.as_str()),
+        ];
+        assert!(!is_same_origin_local(3081, &hdrs(&mixed)));
+    }
+
+    /// 缺 token 或 token 不匹配：即使来源正确也拒绝（第二道防线）。
+    #[test]
+    fn missing_or_wrong_csrf_token_is_rejected() {
+        let base = [
+            ("host", "127.0.0.1:3081"),
+            ("origin", "http://127.0.0.1:3081"),
+        ];
+        assert!(!is_same_origin_local(3081, &hdrs(&base)), "缺 token 应拒绝");
+
+        let wrong = [
+            ("host", "127.0.0.1:3081"),
+            ("origin", "http://127.0.0.1:3081"),
+            (CSRF_HEADER, "deadbeef"),
+        ];
+        assert!(!is_same_origin_local(3081, &hdrs(&wrong)), "错 token 应拒绝");
+    }
+
+    /// 端口不匹配（管理页实际端口与请求 Host 端口不一致）→ 拒绝。
+    #[test]
+    fn port_mismatch_is_rejected() {
+        let tok = csrf_token().to_string();
+        let h = [
+            ("host", "127.0.0.1:9999"),
+            ("origin", "http://127.0.0.1:9999"),
+            (CSRF_HEADER, tok.as_str()),
+        ];
+        assert!(!is_same_origin_local(3081, &hdrs(&h)));
+    }
+
+    /// token 在进程内稳定（每次请求比对的是同一个值，否则正常操作会被自己拒绝）。
+    #[test]
+    fn csrf_token_is_stable_within_process() {
+        assert_eq!(csrf_token(), csrf_token());
+        assert_eq!(csrf_token().len(), 64, "SHA256 十六进制应为 64 字符");
+    }
+
+    // ---------- P1-4 / 请求解析健壮性 ----------
+
+    /// 长 URL 不应被截断：修复前 4096 缓冲只读一次会截断成半个路径。
+    #[test]
+    fn parse_head_keeps_long_url_intact() {
+        let long = "/api/plugin/install?src=".to_string() + &"x".repeat(300);
+        let raw = format!("POST {long} HTTP/1.1\r\nHost: 127.0.0.1:3081\r\n\r\n");
+        let (method, path, _) = parse_head(&raw);
+        assert_eq!(method, "POST");
+        assert_eq!(path, long, "长 URL 不应被截断");
+    }
+
+    /// header 名统一小写（HTTP 头大小写不敏感，查找时按小写匹配）。
+    #[test]
+    fn parse_head_lowercases_header_names() {
+        let raw = "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:3081\r\nOrigin: http://127.0.0.1:3081\r\nX-DSH-Come-Token: abc123\r\n\r\n";
+        let (method, path, headers) = parse_head(raw);
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/api/stop");
+        assert_eq!(header(&headers, "host"), Some("127.0.0.1:3081"));
+        assert_eq!(header(&headers, "origin"), Some("http://127.0.0.1:3081"));
+        assert_eq!(header(&headers, CSRF_HEADER), Some("abc123"));
+        assert_eq!(header(&headers, "x-dsh-come-token"), Some("abc123"));
+    }
+
+    /// GET/HEAD 视为安全方法（不要求来源校验），其余一律校验。
+    #[test]
+    fn only_get_and_head_are_safe_methods() {
+        assert!(is_safe_method("GET"));
+        assert!(is_safe_method("HEAD"));
+        for m in ["POST", "PUT", "DELETE", "PATCH", "get", "OPTIONS"] {
+            assert!(!is_safe_method(m), "{m} 不应被视为安全方法");
+        }
+    }
+
+    // ---------- 端到端：真实 HTTP 请求打到管理页 ----------
+
+    /// 发一个原始 HTTP 报文，返回 (状态码, 完整响应)。
+    fn raw_request(port: u16, raw: &str) -> (u16, String) {
+        use std::io::{Read as _, Write as _};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port))
+            .expect("连接管理页失败");
+        s.write_all(raw.as_bytes()).unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).unwrap();
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        let code = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        (code, text)
+    }
+
+    /// 端到端验证 P0-1：起真实服务，模拟攻击报文，确认被 403 拦下。
+    ///
+    /// 用 `POST /api/stop`（保留的应急端点；无引擎运行时 `stop()` 只改进程内状态、
+    /// 不落盘、不杀任何进程，返回 200）作为探针：
+    /// - 403 = 被来源校验拦住
+    /// - 200 = 通过了来源校验、进入 route 正常处理（同源正常路径）
+    /// 这样既验证了拦截，又不会在测试里真的卸载 dsh 或删数据。
+    #[test]
+    fn end_to_end_cross_site_write_is_rejected() {
+        let (listener, port) = bind_any(0).unwrap();
+        set_admin_port(Some(port));
+        let cfg = AppConfig {
+            status_port: port,
+            ..Default::default()
+        };
+        std::thread::spawn(move || serve_listener(listener, cfg));
+
+        // 1) 攻击报文：浏览器对 127.0.0.1 的简单 POST 不发 preflight，裸 POST 直达
+        let evil = format!(
+            "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\n\r\n"
+        );
+        let (code, _) = raw_request(port, &evil);
+        assert_eq!(code, 403, "无 Origin/token 的跨站写请求必须 403，实际 {code}");
+
+        // 2) DNS rebinding：Host 是攻击者域名
+        let rebound = format!(
+            "POST /api/stop HTTP/1.1\r\nHost: evil.example.com:{port}\r\nOrigin: http://evil.example.com:{port}\r\nX-DSH-Come-Token: {}\r\nContent-Length: 0\r\n\r\n",
+            csrf_token()
+        );
+        let (code, _) = raw_request(port, &rebound);
+        assert_eq!(code, 403, "DNS rebinding 报文必须 403，实际 {code}");
+
+        // 3) 本管理页的正常写请求：应通过校验并正常处理（stop 空闲引擎 → 200）
+        let good = format!(
+            "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nX-DSH-Come-Token: {}\r\nContent-Length: 0\r\n\r\n",
+            csrf_token()
+        );
+        let (code, _) = raw_request(port, &good);
+        assert_eq!(code, 200, "本页写请求应通过校验并正常处理，实际 {code}");
+
+        // 4) GET 不受影响（无来源校验，否则管理页自身都打不开）
+        let get = format!("GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        let (code, body) = raw_request(port, &get);
+        assert_eq!(code, 200, "GET 应正常返回，实际 {code}");
+        assert!(body.contains("nosniff"), "响应应带安全头");
+
+        // 5) 分片发送：请求头跨 TCP 段也应正确解析（P1-4）
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(b"POST /api/stop HTTP/1.1\r\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s.write_all(format!("Host: 127.0.0.1:{port}\r\n").as_bytes())
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s.write_all(
+            format!(
+                "Origin: http://127.0.0.1:{port}\r\nX-DSH-Come-Token: {}\r\nContent-Length: 0\r\n\r\n",
+                csrf_token()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).unwrap();
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        let code: u16 = text.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        assert_eq!(code, 200, "分片请求应被完整读取并正常处理，实际 {code}");
+
+        set_admin_port(None);
     }
 }
 
@@ -136,408 +600,32 @@ fn err_json(msg: &str) -> String {
     serde_json::json!({ "ok": false, "msg": msg }).to_string()
 }
 
-/// 组合状态：守护状态 + 环境探测 + 安装状态。
-fn status_json() -> String {
+/// 组合状态：守护状态 + 环境探测 + 安装状态 + 界面语言（管理页 JS 据此切换文案）。
+fn status_json(cfg: &AppConfig) -> String {
     let st = crate::supervisor::status();
     let eng = serde_json::to_value(&st).unwrap_or(serde_json::Value::Null);
     let env = crate::installer::probe();
     let install = crate::installer::install_state();
-    serde_json::json!({ "eng": eng, "env": env, "install": install }).to_string()
-}
-
-// ---------- 插件清单（/api/plugins） ----------
-
-/// dsh profile 目录：壳启动的是 `dsh web` → 读 web profile 的挂载配置
-fn profile_dir() -> PathBuf {
-    crate::runtime::system_home_dir()
-        .join("profiles")
-        .join("web")
-}
-
-/// 市场/NPM bundle 清单：读 profile/package.json 的 `dsh.profile.bundles`
-fn parse_bundles(profile_dir: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(profile_dir.join("package.json")) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Vec::new();
-    };
-    v["dsh"]["profile"]["bundles"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default()
-}
-
-/// 收集一条 `- id:` / `name:` patch 条目（id/name 至少其一才记录）
-fn push_patch_item(
-    items: &mut Vec<serde_json::Value>,
-    id: &mut Option<String>,
-    name: &mut Option<String>,
-) {
-    if id.is_some() || name.is_some() {
-        let n = name.take().unwrap_or_default();
-        items.push(serde_json::json!({
-            "id": id.take().unwrap_or_default(),
-            "source": n,
-            "local": n.starts_with("file:"),
-        }));
-    }
-}
-
-/// 本地 patch 插件：解析 profile/cordis.patch.yml 的 `- id:` / `name:` 条目
-/// （cordis.patch.yml 是 dsh profile 的 patch overlay；`name: 'file://…'` = 本地源码硬加载）
-fn parse_patches(profile_dir: &Path) -> Vec<serde_json::Value> {
-    let Ok(content) = std::fs::read_to_string(profile_dir.join("cordis.patch.yml")) else {
-        return Vec::new();
-    };
-    let mut items: Vec<serde_json::Value> = Vec::new();
-    let mut cur_id: Option<String> = None;
-    let mut cur_name: Option<String> = None;
-    for raw in content.lines() {
-        let line = raw.trim();
-        if let Some(rest) = line.strip_prefix("- id:") {
-            push_patch_item(&mut items, &mut cur_id, &mut cur_name);
-            cur_id = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("name:") {
-            cur_name = Some(rest.trim().trim_matches('\'').trim_matches('"').to_string());
-        }
-    }
-    push_patch_item(&mut items, &mut cur_id, &mut cur_name);
-    items
-}
-
-/// 插件清单 JSON：bundle（市场/NPM）+ patch（本地 file://）
-fn plugins_json() -> String {
-    let dir = profile_dir();
-    serde_json::json!({
-        "profile": "web",
-        "dir": dir.display().to_string(),
-        "exists": dir.is_dir(),
-        "bundles": parse_bundles(&dir),
-        "patches": parse_patches(&dir),
-    })
-    .to_string()
-}
-
-// ---------- 插件卸载（/api/plugin/uninstall/<id>） ----------
-
-/// 插件卸载：先按本地 patch（cordis.patch.yml 条目）匹配，否则按市场 bundle（dsh plugin remove）。
-/// 核心 bundle（dsh-base / dsh-web-app）禁止卸载——卸了引擎就废了。
-fn uninstall_plugin(id: &str) -> Result<String, String> {
-    let dir = profile_dir();
-    if parse_patches(&dir).iter().any(|p| p["id"].as_str() == Some(id)) {
-        return uninstall_patch(&dir, id);
-    }
-    if parse_bundles(&dir).iter().any(|b| b == id) {
-        const CORE: &[&str] = &["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
-        if CORE.contains(&id) {
-            return Err(format!("{id} 是 dsh 核心包，卸载会破坏引擎，已禁止"));
-        }
-        return uninstall_bundle(id);
-    }
-    Err(format!("未找到插件: {id}"))
-}
-
-/// 本地 patch 卸载：备份后从 cordis.patch.yml 移除 `- id: <target>` 条目及其子行。
-/// 重启引擎后生效（patch overlay 是启动时组装的）。
-fn uninstall_patch(dir: &Path, target: &str) -> Result<String, String> {
-    let path = dir.join("cordis.patch.yml");
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-    let lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<&str> = Vec::new();
-    let mut i = 0;
-    let mut removed = false;
-    while i < lines.len() {
-        let is_target = lines[i]
-            .trim()
-            .strip_prefix("- id:")
-            .map(|r| r.trim() == target)
-            .unwrap_or(false);
-        if is_target {
-            removed = true;
-            i += 1;
-            // 跳过该条目的子行（缩进/空/注释），直到下一个顶层项（无缩进的非注释非空行）
-            while i < lines.len() {
-                let l = lines[i];
-                if l.trim().is_empty() || l.trim_start().starts_with('#') {
-                    i += 1;
-                    continue;
-                }
-                if !l.starts_with(char::is_whitespace) {
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        out.push(lines[i]);
-        i += 1;
-    }
-    if !removed {
-        return Err(format!("cordis.patch.yml 中未找到条目: {target}"));
-    }
-    // 备份原文件（可回滚）
-    let bak = path.with_extension("patch.yml.bak");
-    let _ = std::fs::copy(&path, &bak);
-    // 已无有效条目 → 写注释空 patch（保持合法 YAML，dsh 读作空 overlay）
-    let has_entry = out
-        .iter()
-        .any(|l| l.trim_start().starts_with("- insert:") || l.trim_start().starts_with("- replace:"));
-    let new_content = if has_entry {
-        out.join("\n") + "\n"
-    } else {
-        "# 已卸载全部 patch overlay（dsh-come 管理页，原内容见 cordis.patch.yml.bak）\n".to_string()
-    };
-    std::fs::write(&path, new_content).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
-    Ok(format!(
-        "已卸载 patch 插件「{target}」（原文件备份为 cordis.patch.yml.bak，重启引擎后生效）"
-    ))
-}
-
-/// 市场 bundle 卸载：`dsh plugin --profile web remove <pkg>`（转发 pnpm remove）。
-fn uninstall_bundle(id: &str) -> Result<String, String> {
-    let Some(runner) = crate::runtime::dsh_runner() else {
-        return Err("未找到系统 dsh 命令".to_string());
-    };
-    let args: Vec<String> = vec![
-        "plugin".into(),
-        "--profile".into(),
-        "web".into(),
-        "remove".into(),
-        id.to_string(),
-    ];
-    let mut cmd = crate::runtime::dsh_command(&runner, &args);
-    crate::supervisor::hide_window(&mut cmd);
-    let out = cmd.output().map_err(|e| format!("无法启动 dsh: {e}"))?;
-    let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
-    if out.status.success() {
-        Ok(format!("已卸载 bundle「{id}」（重启引擎后生效）。{tail}"))
-    } else {
-        Err(format!("卸载 {id} 失败（退出码 {:?}）。{tail}", out.status.code()))
-    }
+    serde_json::json!({ "eng": eng, "env": env, "install": install, "lang": cfg.lang }).to_string()
 }
 
 fn admin_html() -> String {
-    r##"<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSH 伴侣 · 管理</title>
-<style>
-:root{--ds:#4D6BFE;--ds-dark:#3a57e0;--bg:#F7F8FA;--card:#fff;--text:#1A1A1A;--muted:#6B7280;--border:#E5E7EB;--ok:#10B981;--bad:#EF4444;--warn:#F59E0B;--radius:16px;--shadow:0 1px 3px rgba(0,0,0,.06),0 4px 12px rgba(0,0,0,.04)}
-*{box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;padding:24px 16px;background:var(--bg);color:var(--text);line-height:1.5}
-.wrap{max-width:840px;margin:0 auto}
-header{display:flex;align-items:center;gap:14px;margin-bottom:24px}
-header h1{font-size:22px;font-weight:600;margin:0;letter-spacing:-.3px}
-header p{margin:2px 0 0;font-size:13px;color:var(--muted)}
-.whale{width:42px;height:42px;flex-shrink:0;color:var(--ds)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
-.card h3{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 14px}
-.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
-.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center}
-.row.right{justify-content:flex-end;margin-top:8px}
-button{appearance:none;border:1px solid var(--border);background:#fff;color:var(--text);padding:8px 16px;border-radius:10px;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s}
-button:hover{border-color:#cbd5e1;background:#f9fafb;transform:translateY(-1px)}
-button:disabled{opacity:.5;cursor:not-allowed;transform:none}
-button.primary{background:var(--ds);color:#fff;border-color:var(--ds)}
-button.primary:hover{background:var(--ds-dark);border-color:var(--ds-dark)}
-button.danger{color:var(--bad);border-color:#fecaca}
-button.danger:hover{background:#fef2f2}
-select{padding:7px 12px;border:1px solid var(--border);border-radius:10px;background:#fff;font-size:13px;color:var(--text);min-width:160px}
-.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600}
-.badge.ok{background:#d1fae5;color:#065f46}
-.badge.bad{background:#fee2e2;color:#991b1b}
-.badge.warn{background:#fef3c7;color:#92400e}
-.badge.muted{background:#f3f4f6;color:#4b5563}
-.status-big{font-size:18px;font-weight:600;margin-bottom:4px}
-.status-meta{color:var(--muted);font-size:13px}
-.env-line{display:flex;gap:24px;flex-wrap:wrap;font-size:13px}
-.env-item{display:flex;align-items:center;gap:6px}
-.env-item .dot{width:7px;height:7px;border-radius:50%}
-.env-item .dot.ok{background:var(--ok)}.env-item .dot.bad{background:var(--bad)}.env-item .dot.muted{background:#d1d5db}
-.list{font-size:13px}
-.item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
-.item:last-child{border-bottom:none}
-.item .name{font-weight:500;word-break:break-all}
-.item .source{font-size:12px;color:var(--muted);margin-top:2px}
-.item .tag{font-size:11px;padding:2px 6px;border-radius:6px;background:#eef2ff;color:var(--ds);font-weight:600;margin-left:6px}
-.empty{color:var(--muted);font-size:13px;padding:8px 0}
-#toast{position:fixed;right:16px;bottom:16px;max-width:420px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:0 10px 25px rgba(0,0,0,.12);font-size:13px;z-index:50;transform:translateY(120%);transition:transform .25s;pointer-events:none}
-#toast.show{transform:translateY(0)}
-#toast.ok{border-left:4px solid var(--ok)}
-#toast.bad{border-left:4px solid var(--bad)}
-</style>
-</head>
-<body>
-<div class="wrap">
-<header>
-<svg class="whale" viewBox="0 0 50 50" fill="currentColor" aria-hidden="true"><path d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></svg>
-<div>
-<h1>DSH 伴侣</h1>
-<p>DeepSeek Harness 本地守护 · 管理页</p>
-</div>
-</header>
-
-<div class="card">
-<h3>dsh 引擎</h3>
-<div class="status-big" id="engStatus">加载中…</div>
-<div class="status-meta" id="engMeta">等待状态端点响应</div>
-<div class="row">
-<button class="primary" onclick="openDsh()">打开 dsh 界面</button>
-<button onclick="act('start')">启动 dsh</button>
-<button onclick="act('stop')">关闭 dsh</button>
-</div>
-</div>
-
-<div class="grid2">
-<div class="card">
-<h3>运行环境</h3>
-<div class="env-line" id="env">加载中…</div>
-<div class="row">
-<button id="btn-node" onclick="act('install/node')">安装 Node.js</button>
-<button id="btn-dsh" onclick="act('install/dsh')">安装 dsh</button>
-</div>
-</div>
-
-<div class="card">
-<h3>版本管理</h3>
-<div id="dshver">加载中…</div>
-<div class="row">
-<button class="primary" id="btn-upd" onclick="act('dsh/update')">更新到最新</button>
-<select id="ver-sel"><option value="">选择历史版本…</option></select>
-<button onclick="installVer()">安装所选</button>
-</div>
-</div>
-</div>
-
-<div class="card">
-<h3>已安装插件（web profile）</h3>
-<div class="list" id="plugins">加载中…</div>
-</div>
-
-<div id="toast"></div>
-</div>
-
-<script>
-let DSPORT = 3080;
-function openDsh(){ window.open('http://127.0.0.1:'+DSPORT, '_blank'); }
-async function act(a){
-  try {
-    const r = await fetch('/api/'+a,{method:'POST'});
-    const d = await r.json();
-    if (d.msg) flash(d.msg, d.ok!==false);
-  } catch(e){ flash('请求失败：'+e, false); }
-  refresh();
-}
-async function installVer(){
-  const v = document.getElementById('ver-sel').value;
-  if (!v) { flash('请先选择要安装的历史版本', false); return; }
-  try {
-    const r = await fetch('/api/dsh/install-version/'+encodeURIComponent(v),{method:'POST'});
-    const d = await r.json();
-    flash(d.msg, d.ok!==false);
-  } catch(e){ flash('安装请求失败：'+e, false); }
-  refresh();
-}
-async function uninstall(id){
-  if(!confirm('确定卸载插件「'+id+'」吗？卸载后需重启引擎生效。')) return;
-  try {
-    const r = await fetch('/api/plugin/uninstall/'+encodeURIComponent(id),{method:'POST'});
-    const d = await r.json();
-    flash(d.msg, d.ok!==false);
-  } catch(e){ flash('卸载请求失败：'+e, false); }
-  refresh();
-}
-let toastTimer;
-function flash(msg, ok){
-  const el = document.getElementById('toast');
-  el.className = ok ? 'ok' : 'bad';
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), ok ? 5000 : 8000);
-}
-function fmtEnv(label, value, ok){
-  return '<div class="env-item"><span class="dot '+(ok?'ok':'bad')+'"></span><span>'+label+' '+value+'</span></div>';
-}
-async function refresh(){
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    const e = d.eng||{};
-    if (e.port) DSPORT = e.port;
-    const running = !!e.running;
-    const ready = !!e.ready;
-    const big = document.getElementById('engStatus');
-    const meta = document.getElementById('engMeta');
-    if (running && ready) {
-      big.innerHTML = '<span class="badge ok">运行中</span>';
-      meta.innerHTML = 'dsh 已就绪 · 端口 '+e.port+(e.pid?' · PID '+e.pid:'')+(e.version?' · '+e.version:'');
-    } else if (running) {
-      big.innerHTML = '<span class="badge warn">启动中</span>';
-      meta.innerHTML = 'dsh 正在启动'+(e.stage?' · '+e.stage:'')+(e.pid?' · PID '+e.pid:'');
-    } else if (e.last_error) {
-      big.innerHTML = '<span class="badge bad">已停止</span>';
-      meta.innerHTML = '上次错误：'+e.last_error;
-    } else {
-      big.innerHTML = '<span class="badge bad">已停止</span>';
-      meta.innerHTML = 'dsh 未在运行';
+    // 开发期（仅 debug 构建）：若 exe 同级有 admin.html，读它（改完刷新即见，不重编译）。
+    //
+    // release 构建**绝不**读外部文件：否则任何人往 exe 目录放一个 admin.html
+    // 就能往管理页注入任意 JS，而管理页能调卸载 dsh / 删数据 / 启停接口
+    // ——那是一条完整的本地提权链，且行为随环境残留文件而不可预测。
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let dev = exe.with_file_name("admin.html");
+            if dev.is_file() {
+                if let Ok(s) = std::fs::read_to_string(&dev) {
+                    return s.replace(CSRF_PLACEHOLDER, csrf_token());
+                }
+            }
+        }
     }
-    const v = d.env||{};
-    document.getElementById('env').innerHTML =
-      fmtEnv('Node', v.node||'未安装', !!v.node)+
-      fmtEnv('npm', v.npm||'未安装', !!v.npm)+
-      fmtEnv('dsh', v.dsh||'未安装', !!v.dsh)+
-      fmtEnv('winget', v.winget||'不可用', !!v.winget);
-    const ins = d.install||{};
-    document.getElementById('btn-node').disabled = !!ins.running;
-    document.getElementById('btn-dsh').disabled = !!ins.running;
-    if (ins.running) flash('安装中：'+(ins.kind||'')+' … '+(ins.msg||''), true);
-    else if (ins.msg && ins.kind && !ins.running) flash((ins.ok?'安装成功：':'安装失败：')+ins.msg, !!ins.ok);
-  } catch(e){
-    document.getElementById('engStatus').innerHTML = '<span class="badge bad">连接失败</span>';
-    document.getElementById('engMeta').textContent = '无法连接状态端点';
-  }
-  try {
-    const vr = await fetch('/api/dsh/versions');
-    const dv = await vr.json();
-    const cur = dv.current||'未安装';
-    const lat = dv.latest||'查询失败';
-    const tagInfo = dv.latest_tag ? ' · npm stable tag: '+dv.latest_tag : '';
-    const badge = dv.has_update ? '<span class="badge warn">可更新到 '+lat+'</span>' : '<span class="badge ok">已是最新</span>';
-    document.getElementById('dshver').innerHTML =
-      '<div style="margin-bottom:8px">当前 <b>'+cur+'</b> · 最新发布 <b>'+lat+'</b>'+tagInfo+'</div>'+badge;
-    const sel = document.getElementById('ver-sel');
-    const prev = sel.value;
-    sel.innerHTML = '<option value="">选择历史版本…</option>'+(dv.versions||[]).map(v=>'<option value="'+v+'">'+v+'</option>').join('');
-    if (prev) sel.value = prev;
-    document.getElementById('btn-upd').disabled = !dv.has_update;
-  } catch(e){
-    document.getElementById('dshver').innerHTML = '<span class="badge bad">版本信息读取失败</span>';
-  }
-  try {
-    const pr = await fetch('/api/plugins');
-    const pl = await pr.json();
-    const el = document.getElementById('plugins');
-    if (!pl.exists) { el.innerHTML = '<div class="empty">未找到 profile 目录：'+pl.dir+'</div>'; }
-    else {
-      let html = '<div style="margin-bottom:12px"><b>市场 / NPM</b> <span class="badge muted">'+(pl.bundles||[]).length+'</span></div>';
-      html += (pl.bundles||[]).length ? (pl.bundles||[]).map(x=>'<div class="item"><div><div class="name">'+x+'</div></div><button class="danger" onclick="uninstall(\''+x+'\')">卸载</button></div>').join('') : '<div class="empty">无</div>';
-      html += '<div style="margin:18px 0 12px"><b>本地 patch</b> <span class="badge muted">'+(pl.patches||[]).length+'</span></div>';
-      html += (pl.patches||[]).length ? (pl.patches||[]).map(x=>'<div class="item"><div><div class="name">'+x.id+(x.local?'<span class="tag">本地</span>':'')+'</div><div class="source">'+x.source+'</div></div><button class="danger" onclick="uninstall(\''+x.id+'\')">卸载</button></div>').join('') : '<div class="empty">无</div>';
-      el.innerHTML = html;
-    }
-  } catch(e){
-    document.getElementById('plugins').innerHTML = '<span class="badge bad">插件清单读取失败</span>';
-  }
-}
-setInterval(refresh, 2000);
-refresh();
-</script>
-</body>
-</html>"##
-        .to_string()
+    // 生产：编译期内嵌（单文件 exe）+ 注入 CSRF token
+    include_str!("../resources/admin.html").replace(CSRF_PLACEHOLDER, csrf_token())
 }

@@ -1,10 +1,12 @@
 # dsh-come｜DSH 伴侣
 
+> 🌐 [English README](README.en.md)
+
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的 Windows 桌面壳**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。
 
 > **面向谁**：已经装了 `dsh`（或 Node.js）的人，想要一个常驻托盘、双击即启动、挂了自动拉起的桌面入口。缺失时管理页/向导会自动安装（node 用 winget、dsh 用 `npm install -g`，不走 npx 临时拉取）。开发者直接用官方 `npx @deepseek-ai/dsh web` 亦可，本项目的价值是把引擎守护和桌面体验包起来。
 
-> 🚀 **当前方向（2026-08-17 定案）**：**越做越薄**——壳只做托盘 + 进程守护 + 极简启停（详见 `docs/slimming-plan.md`）。不做插件市场（归 [dsh-market](https://github.com/dsh-market/dsh-market) 插件）、不做版本管理（跟随系统 dsh）、不做状态页/向导页（dsh web UI 已有）。三层集成方案（md-agent 协作）见 `docs/integration-plan.md`。
+> 🚀 **当前方向（2026-08-27 更新，v4）**：**越做越薄 + 壳零 UI**——壳只做三件事：守护（profile 组）/ 引导安装 / 环境清单（come.patch.yml），外加自更新；一切用户可见的东西都是 dsh 插件（详见 `docs/direction-v4.md`）。不做插件市场（归 [dsh-market](https://github.com/dsh-market/dsh-market) 插件）、不做版本管理（跟随系统 dsh）、不做状态页（dsh web UI 已有）。
 
 ## 它做什么
 
@@ -38,14 +40,26 @@ dsh-come.exe（Rust 单 exe，进程外 supervisor）
 
 ## 快速开始
 
+**Windows**：从 [GitHub Releases](https://github.com/qing3a/dsh-come/releases) 下载
+`dsh-come.exe` 直接运行。源码构建亦可：
+
 ```bash
 git clone https://github.com/qing3a/dsh-come
 cd dsh-come
 cargo run --release
 ```
 
-**前置**：Windows 10/11（Node.js 缺失时自动用 winget 安装 LTS；dsh 缺失时自动 `npm install -g
-@deepseek-ai/dsh`——均可在管理页 `http://127.0.0.1:3081` 手动操作与查看进度）。
+**macOS / Linux**（一键安装，自动注册看门狗 launchd/systemd）：
+
+```bash
+curl -fsSL https://github.com/qing3a/dsh-come/releases/latest/download/install.sh | sh
+# 或 wget -qO- … | sh；仓库内直接 sh scripts/install.sh
+```
+
+**前置**：Windows 10/11、macOS 或主流 Linux（Node.js 缺失时自动用 winget 安装 LTS；dsh 缺失时
+自动 `npm install -g @deepseek-ai/dsh`——均可在管理页 `http://127.0.0.1:3081` 手动操作与查看进度）。
+Linux 看门狗依赖 systemd 用户会话（无则自动降级为托盘/`--no-tray` 常驻，崩溃不自动复活）；
+macOS 看门狗为 launchd LaunchAgent（登录自启 + KeepAlive）。
 
 ## 关键设计
 
@@ -74,5 +88,7 @@ MIT。托盘图标为代码生成的 32x32 圆角图标（`src/tray.rs`），与
 
 ## Roadmap
 
-- ✅ v1（当前）：进程守护 / 托盘（5 项菜单）/ 自动开浏览器 / come.patch.yml / 崩溃退避重启 / 自愈诊疗（doctor，证据驱动分级处置）
-- 🔜 可选：md-agent 守护（`docs/integration-plan.md` Phase 2）、三层集成（Phase 3）
+- ✅ v1（当前）：进程守护 / 托盘 / 自动开浏览器 / come.patch.yml / 崩溃退避重启 / 自愈诊疗（doctor，证据驱动分级处置）
+- ✅ P0（2026-08-27）：自动更新（GitHub Releases + GitHub Actions 自动发布 + SHA256 校验 + 询问制）/ i18n（zh/en：托盘/通知/CLI/管理页，README 双语）
+- ✅ 跨平台（2026-08-29）：三平台矩阵发布（win / macOS universal / linux）+ `install.sh` 一键安装 + launchd/systemd 看门狗 + 自更新按平台取清单（`update-{win,macos,linux}.json`）
+- 🔜 P1：多实例（单机多 profile 组）；P2：统一为「写插件」（come-manager / md-studio 模板 / 上架 dsh-market）——详见 `docs/direction-v4.md`

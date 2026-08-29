@@ -31,6 +31,9 @@ pub struct AppConfig {
     /// false = 退出时保留引擎运行（dsh 继续服务，下次启动自动认领）。
     #[serde(default = "default_true")]
     pub exit_close_engine: bool,
+    /// 界面语言：zh / en（默认 zh；改动需重启生效，i18n.rs 首次调用时缓存）
+    #[serde(default = "default_lang")]
+    pub lang: String,
 }
 
 const DEFAULT_STATUS_PORT: u16 = 3081;
@@ -41,6 +44,10 @@ fn default_status_port() -> u16 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_lang() -> String {
+    "zh".to_string()
 }
 
 impl Default for AppConfig {
@@ -54,6 +61,7 @@ impl Default for AppConfig {
             doctor_mode: None,
             status_port: default_status_port(),
             exit_close_engine: true,
+            lang: default_lang(),
         }
     }
 }

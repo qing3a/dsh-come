@@ -1,0 +1,127 @@
+# 自动发布流水线（方向 v4 P0，2026-08-27；跨平台矩阵 2026-08-29）
+#
+# 打 `v*` 标签（如 v0.2.0）→ 自动：cargo test（质量门）→ 三平台矩阵构建 →
+# macOS 双切片 lipo 成 universal → 计算 sha256 生成按平台的 update-*.json →
+# 创建 GitHub Release（三个二进制 + 三个清单 + 安装脚本）。
+#
+# dsh-come 的自动更新（updater.rs）按平台取 latest/download/update-{win|macos|linux}.json
+# 的 {version,url,sha256}，下载后本地 SHA256 校验（无代码签名分发，HTTPS + 哈希防中间人）。
+# 旧版 Windows（<0.3，无平台后缀概念）只认 update.json——一并附带同内容旧名清单，保证老版本能升上来。
+#
+# 发布纪律：先手动 bump Cargo.toml 的 version（与 tag 一致，去掉 v 前缀），
+# 提交后打 tag：git tag v0.2.0 && git push origin v0.2.0
+#
+# 注意：macos-13 是最后一代 Intel runner；GitHub 若将其退役，回退为仅 arm64（macos-latest），
+# 更新 update-macos.json 指向单切片即可。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            artifact: win
+            exe: target/release/dsh-come.exe
+          - name: macos-x64
+            os: macos-13
+            artifact: macos-x64
+            exe: target/release/dsh-come
+          - name: macos-arm64
+            os: macos-14
+            artifact: macos-arm64
+            exe: target/release/dsh-come
+          - name: linux
+            os: ubuntu-latest
+            artifact: linux
+            exe: target/release/dsh-come
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # tray-icon 在 Linux 需 gtk3/appindicator/xdo 系统库（ubuntu-latest 不预装 -dev 包）
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+
+      - name: Tests (quality gate)
+        run: cargo test
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.exe }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble macOS universal binary
+        run: |
+          lipo -create -output dsh-come-macos \
+            artifacts/macos-x64/dsh-come artifacts/macos-arm64/dsh-come
+
+      - name: Stage final assets
+        run: |
+          mkdir -p final
+          cp artifacts/win/dsh-come.exe final/dsh-come.exe
+          cp dsh-come-macos final/dsh-come-macos
+          cp artifacts/linux/dsh-come final/dsh-come-linux
+          chmod +x final/dsh-come-macos final/dsh-come-linux
+
+      - name: Generate per-platform update.json
+        shell: bash
+        run: |
+          tag="${{ github.ref_name }}"
+          ver="${tag#v}"
+          for spec in "win:dsh-come.exe" "macos:dsh-come-macos" "linux:dsh-come-linux"; do
+            suffix="${spec%%:*}"; asset="${spec##*:}"
+            hash=$(shasum -a 256 "final/$asset" | awk '{print $1}')
+            url="https://github.com/qing3a/dsh-come/releases/download/$tag/$asset"
+            printf '{"version":"%s","url":"%s","sha256":"%s"}\n' "$ver" "$url" "$hash" > "update-$suffix.json"
+          done
+          # 旧版兼容：<0.3 的 Windows updater 只认无后缀 update.json
+          cp update-win.json update.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            final/dsh-come.exe
+            final/dsh-come-macos
+            final/dsh-come-linux
+            update-win.json
+            update-macos.json
+            update-linux.json
+            update.json
+            scripts/install.sh
+            scripts/install-watchdog.sh

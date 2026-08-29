@@ -11,6 +11,9 @@
 >   recruit-workbench / kb-mcp 条目未写入，且 kb-mcp 依赖的 md-agent release 构建是否就绪需先确认
 > - ✅ **仍成立**：dsh 侧插件（recruit-workbench、kb-mcp 桥接）、「壳不代启动外部服务」原则、数据流设计
 
+> ⚠️ **2026-08-27 方向 v4 作废标注**：md-agent 决定**整体插件化**（数据层并入 dsh 进程），
+> 三层协作方案整体**作废**（见 `docs/direction-v4.md`）。本文仅存档，不再作为实施依据。
+
 ---
 
 ## 1. 三层职责边界

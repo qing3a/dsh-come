@@ -165,6 +165,55 @@ supervisor 管，防绕过崩溃自愈/退避/日志）。dsh-market 未安装�
 - **验证**：cargo test 17 全绿 + release 构建（dist/dsh-come.exe 4.2MB，含通知库）+ CLI 冒烟
   （status 未运行 JSON / --help 正常 / 无头守护可常驻、跨进程 status/stop 文件流可用）。
 
+## 方向 v4（2026-08-27）：商业化与升级方案（docs/direction-v4.md）
+
+讨论定稿（决策记录，实施按路线图分期）：**壳零 UI**——壳只做三件事（守护 profile 组 /
+引导安装 / 环境清单 come.patch.yml）+ 自更新；一切用户可见的东西都是 dsh 插件（跑在 dsh web 里）。
+
+- **四个拍板**：
+  - md-agent **整体插件化**（数据层并入 dsh 进程，三层收敛两层，壳不留 md-agent 守护位）
+  - 多实例 = **单机多 profile**（supervisor 重构为 profile 组）
+  - 工作台 = **参考模板**（md-studio 为样板 + 配方文档，不做通用产品化）
+  - i18n = **代码面字符串外部化 + README 双语**（插件 UI 各自负责）
+- **P0**：自动更新（update.json + SHA256 + 询问制 + .bak 回滚 + 看门狗协调；不买签名证书）+
+  GitHub Actions 自动发布（打 tag → test → build → sha256 → release）+ i18n
+- **P1**：supervisor 多 profile 组 / 托盘分组 / IPC schema_version
+- **P2**：md-studio 定型模板 + 配方文档 / **管理页保留在壳内**（2026-08-27 拍板：功能少 +
+  预启动鸡生蛋，迁出会变两个页面，不迁 come-manager；未来管理 UI 膨胀再评估）/ 上架零清单 /
+  环境清单 CRUD（`dsh-come plugin add/remove`）
+- **作废**：integration-plan Phase 2/3（md-agent 守护、三层集成）；integration-plan.md 已标注
+
+## P0 实施记录（2026-08-27）：自动更新 + GitHub Actions + i18n
+
+- **updater.rs**（新增，含单测）：`check()`（GitHub Releases `latest/download/update.json`，
+  每日节流一次；托盘「检查更新」force 无视）→ `download_and_verify()`（下载 `<exe>.new.exe` +
+  sha2 SHA256 与清单比对）→ `install()`（写 PowerShell 换装脚本：禁看门狗 → 等本进程退出 →
+  备份 `.bak` → 替换 → 重启 → 恢复看门狗 → 自删；UTF-8 BOM 防中文任务名乱码）。托盘新增
+  「检查更新 / 更新到 vX」两项；CLI 新增 `update` 子命令（JSON 输出）。
+- **.github/workflows/release.yml**：打 `v*` tag → cargo test（质量门）→ build --release →
+  PowerShell 算 sha256 生成 update.json → softprops 创建 Release（附 exe + update.json）。
+  发布纪律：先 bump Cargo.toml version（与 tag 去掉 v 前缀一致）再打 tag。
+- **i18n**：`src/i18n.rs`（`tr(zh,en)` 就地双语 + 首次调用缓存；config.lang 默认 zh）+
+  接入托盘菜单/桌面通知/CLI（status/stop/help/update）/ wizard 提示 / status.rs API 消息
+  （/api/status 增加 lang 字段）；管理页 admin.html 增加 data-i18n 字典层（语言以 /api/status
+  的 lang 为准，回退浏览器语言）；README.en.md 全量英文版。
+- **验证**：cargo test **27 全绿**（新增 updater 3 + i18n 1）+ cargo build 通过（警告清零，
+  顺带删了 tray.rs 重复的 fg 声明）+ admin.html JS node --check 通过 + release.yml js-yaml 校验通过。
+- **范围外（后续收）**：doctor.rs 报告与 installer.rs 内部消息仍为中文（诊断类文案，P1 再收）；
+  代码签名（决策：不买，GitHub Releases + HTTPS + SHA256 够用）。
+
+## 现状勘误（2026-08-27 实施时发现：工作区已领先于文档快照）
+
+- 本记忆「保留的 11 个文件」表与托盘 5 项菜单描述**已过期**：工作区（含未提交部分）已含
+  uninstall.rs、管理页重设计（admin.html 32K，含插件清单/卸载/dsh 版本管理）、Unix 单实例
+  flock（main.rs + Cargo.toml libc）、托盘 7 项菜单（含「打开管理页」「退出时关闭引擎」复选框，
+  2026-08-21 修正）——快照停在 08-19，实际已演进到 08-21+。
+- **与方向 v4 的两个张力点**：
+  1. ~~壳管理页保留 or 迁出 come-manager~~ —— **2026-08-27 已拍板：保留在壳内**（功能少 +
+     预启动鸡生蛋，迁出会变成「预启动小页 + 插件大页」两个页面；后端 JSON API 本就归壳，
+     迁移只搬前端渲染。未来管理 UI 膨胀或企业包需要时再评估）。
+  2. 跨平台苗头（Unix flock / libc）——v4 说「不盲目跨平台」，代码已在加 Unix 路径，是否继续需决策。
+
 ## 待办
 
 - [x] cargo build / cargo test 编译验证（2026-08-18 通过；5 测试全绿）
@@ -172,7 +221,45 @@ supervisor 管，防绕过崩溃自愈/退避/日志）。dsh-market 未安装�
 - [x] doctor.rs 加固（2026-08-18：wmic→PowerShell、防误杀活引擎、孤儿进程分级、wizard no-runner 即停）——cargo test 15 全绿 + release 构建通过，已重建 dist/dsh-come.exe
 - [x] 认领收敛（2026-08-18：adopted 探活判死 + spawn owned 复位 + doctor 端口协调 + wizard 超时重试 + 单实例锁 + 日志轮转删旧 + npx 标识 + doctor_mode 接入 + 删死字段）——cargo test 16 全绿
 - [x] 页面级守护（2026-08-18：三段式探活提示→累积→判死走崩溃链路；删 wipe_data 死代码；set_stage 接入）——cargo test 17 全绿、编译警告清零
-- [ ] 考虑 supervisor 增加 md-agent 守护（integration-plan Phase 2，未启动）
+- [x] 方向 v4 定稿（2026-08-27）：商业化与升级方案，见 docs/direction-v4.md；md-agent 守护项作废删除
+- [x] P0 自动更新 + GitHub Actions 自动发布 + i18n（2026-08-27 实施；cargo test 27 全绿）
+- [ ] 管理页：安装 Node 版本选项（2026-08-27 用户拍板进待办）——`winget show --id OpenJS.NodeJS.LTS --versions`
+      列版本 → 管理页下拉（默认「最新 LTS」，选版本传 `--version <精确版本号>`）；winget 1.6+ 才支持，
+      缺失时下拉显示不可用、按钮保持现状。改 installer.rs + status.rs（GET /api/node/versions、
+      POST /api/install/node?version=）+ admin.html
+- [ ] 版本数据缓存策略（2026-08-27 用户要求）：node/dsh 版本列表**只在启动后拉取一次**，
+      安装动作后 `invalidate_cache` 失效重拉，避免管理页多次请求触发网络调用——
+      npm_view 60s TTL 改为长期缓存（安装后失效）；node_versions 同策略（winget show 慢）；
+      probe（环境探测）保持短 TTL（状态要实时）
+- [ ] 生态观察（不建功能，跟踪即可）：MCP-Apps（SEP-1865，draft）——消费端是 dsh web（UI Host），
+      壳零改动；若 dsh 官方支持 MCP-Apps 且工作台走向「MCP server + apps」形态，壳只需环境清单
+      管理 dsh-mcp-client 条目（kb-mcp 先例），无需新架构。**2026-08-27 升级为自研项目（已拍板）**：
+      宿主插件 `plugins/mcp-apps-host/`（设计见 `docs/mcp-apps-host-design.md`）——三个拍板：
+      ① 现在就做 Phase 0 spike（协议 draft 期间验证假设，知识不浪费）；② server 连接层**自管**
+      （dsh-mcp-client 不暴露 client 服务，SDK Client 独立连接）；③ 本仓库内开发 + npm 发布。
+      Phase 0 spike **已完成（2026-08-27 PASS，9 步全过）**——`plugins/mcp-apps-host/`
+      （npm run spike）：自管连接 / ui:// 发现 / 宿主+沙箱页（不同 origin）/ SDK Client
+      initialize 握手 / ui/initialize 能力协商 / tools/list / tools/call 代理打通 /
+      sampling 拒绝。**两个发现**：① SDK 1.30 响应校验 × zod 4.4.3 兼容问题
+      （zod-compat isZ4Schema + zod/v4-mini），Phase 1 固定 zod 或绕过校验；
+      ② apps 层消息走裸 JSON-RPC 更贴近 spec。Phase 1 核心宿主待启动。
+
+## 托盘稳定性加固（2026-08-27）：幽灵图标自愈
+
+**现象**：长时间运行后托盘图标「看得见但点不出菜单」。根因：Windows 托盘图标注册在
+Explorer 的 Shell_TrayWnd 上，Explorer 重启/睡眠唤醒后 Shell_NotifyIcon 注册失效成
+「幽灵图标」；旧代码只在启动时创建一次托盘，无恢复机制。
+
+**修复（src/tray.rs，三层自愈）**：
+1. **Explorer 重启检测**：后台线程每 2s 查 `Shell_TrayWnd` 属主 PID（FindWindowW +
+   GetWindowThreadProcessId），PID 变化或「消失后回来」→ 发 RefreshTray 重建托盘；
+2. **定时兜底**：1s 刷新线程每 600s（10 分钟）发一次 RefreshTray（恢复检测之外的未知失效）；
+3. **主线程心跳**：refresh() 每 1s 刷新 MAIN_ACTIVITY；心跳线程发现 >30s 未活动 →
+   记日志（诊断「是否主线程卡死」）+ 每次卡死事件尝试一次重建。
+
+`App::rebuild_tray()` 整体重建 menu + icon（旧 TrayIcon drop 发 NIM_DELETE 对已死 Explorer
+无害）。tray-icon 已是最新 0.24.2（cargo search 确认，无升级空间）。验证：cargo build +
+cargo test 27 全绿。
 
 ## 运行态与配置澄清（2026-08-18）
 

@@ -149,9 +149,15 @@ pub fn set_stage(s: &str) {
     }
 }
 
-/// 秒 → 人类可读时长：「45 秒」/「1 分 24 秒」。托盘/向导展示安装已耗时。
+/// 秒 → 人类可读时长：「45 秒」/「1 分 24 秒」（en：「45s」/「1m 24s」）。托盘/向导展示安装已耗时。
 pub fn fmt_elapsed(secs: u64) -> String {
-    if secs < 60 {
+    if crate::i18n::is_en() {
+        if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}m {}s", secs / 60, secs % 60)
+        }
+    } else if secs < 60 {
         format!("{secs} 秒")
     } else {
         format!("{} 分 {} 秒", secs / 60, secs % 60)
@@ -208,6 +214,17 @@ pub fn hide_window(cmd: &mut std::process::Command) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn hide_window(_cmd: &mut std::process::Command) {}
+
+/// 让子进程落在独立进程组（Unix）：spawn 前调用，`kill -pgid` 可整树清理。
+/// Windows 无需此设置（Job Object / taskkill /T 负责进程树）。
+#[cfg(not(target_os = "windows"))]
+pub fn start_process_group(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_process_group(_cmd: &mut std::process::Command) {}
 
 // ---------- 滚动日志 ----------
 
@@ -313,6 +330,8 @@ fn build_command(cfg: &AppConfig) -> Result<Command, String> {
     // 让 npm 每发一个 HTTP 请求打一行（npm http fetch GET 200 …），engine.log 有持续的
     // 「活着」信号；FORCE_COLOR=0 去 ANSI 颜色码。
     cmd.env("npm_config_loglevel", "http").env("FORCE_COLOR", "0");
+    // Unix：独立进程组（引擎+node 后代同一组），杀树 kill -pgid 覆盖整树
+    start_process_group(&mut cmd);
     hide_window(&mut cmd);
     Ok(cmd)
 }
@@ -379,12 +398,16 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
         )
     })?;
     let pid = child.id();
-    // 纳入 Job Object：整树（cmd→dsh.cmd→node）受 KILL_ON_JOB_CLOSE 约束——
+    // 纳入 Job Object（Windows）：整树（cmd→dsh.cmd→node）受 KILL_ON_JOB_CLOSE 约束——
     // dsh-come 崩溃/退出时 OS 强杀整树，消除「守护进程崩→dsh 变孤儿占端口」。
     // 失败仅记日志降级（仍可用 taskkill /T），不影响启动。
+    // Unix：记录进程组根 pid 供 kill_tree（kill -pgid）整树清理。
+    #[cfg(target_os = "windows")]
     if !crate::job::assign_child(pid) {
         append_log("⚠️ 引擎未纳入 Job Object（降级 taskkill /T；崩溃自愈仍可工作，但崩溃兜底稍弱）");
     }
+    #[cfg(not(target_os = "windows"))]
+    crate::job::record_engine_pid(pid);
     st.child = Some(child);
     st.status.running = true;
     st.status.ready = false;
@@ -399,7 +422,7 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
     // 阶段提示：调用方可能已设置更明确的阶段（如「启动系统 dsh…」），
     // 只在为空时兜底「启动中…」
     if st.status.stage.is_empty() {
-        st.status.stage = "启动中…".to_string();
+        st.status.stage = crate::i18n::tr("启动中…", "Starting…").to_string();
     }
     // 注意：不在 start() 里清零 restarts——监测线程递增后被清零会让崩溃上限永不触发。
     // 预算清零由「健康期重置」负责（连续运行超 HEALTHY_RESET_SECS）。
@@ -461,12 +484,9 @@ pub fn stop() -> Result<(), String> {
 fn kill_child(st: &mut SuperState) {
     // 1) Job Object 强杀整树（覆盖壳 spawn 的 dsh：cmd→dsh.cmd→node 孙进程，不漏杀）
     let _ = crate::job::terminate_job();
-    // 2) 对当前 pid 兜底 taskkill（覆盖外部认领的 dsh——不在 job 内；对 job 内已死进程无副作用）
+    // 2) 对当前 pid 兜底杀进程树（覆盖外部认领的 dsh——不在 job 内；对 job 内已死进程无副作用）
     if let Some(pid) = st.status.pid {
-        let mut cmd = Command::new("taskkill");
-        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
-        hide_window(&mut cmd);
-        let _ = cmd.status();
+        kill_tree(pid);
     }
     if let Some(mut c) = st.child.take() {
         let _ = c.kill();
@@ -513,12 +533,45 @@ pub fn read_state_json() -> String {
     }
 }
 
+/// state.json 距上次写入的秒数；文件缺失/不可读 → None。
+/// 监测线程每轮（~1s）重写 state.json，**文件 mtime 即守护心跳**——
+/// CLI `status` 据此判断守护是否存活（审计 P2-4：单实例锁在创建失败时退化无锁，
+/// 用它判活会把「守护其实在跑」误报成「未运行」；心跳与锁语义解耦）。
+pub fn state_stale_secs() -> Option<u64> {
+    let meta = std::fs::metadata(runtime::state_path()).ok()?;
+    let mtime = meta.modified().ok()?;
+    // mtime 略超前（时钟偏移）→ elapsed 报错：按 0 秒（新鲜/存活）处理，
+    // 避免把「守护在跑」误报成「未运行」。
+    Some(mtime.elapsed().map(|d| d.as_secs()).unwrap_or(0))
+}
+
 /// 发送停止请求：写 control.json（CLI `stop` 用）；监测线程下一轮消费。
 pub fn request_stop() {
     let p = runtime::control_path();
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(&p, "{\"stop\":true}");
+    }
+}
+
+/// 发送停止请求并等待生效：监测线程每 1s 消费 control.json 停引擎并重写 state.json，
+/// 这里轮询其 `running` 字段（≤2.5s，覆盖两轮调度抖动），避免调用方紧随的
+/// `status` 读到「仍在运行」的旧值。返回 (是否已确认停止, 最终 state.json 原文)。
+pub fn request_stop_and_wait() -> (bool, String) {
+    request_stop();
+    let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let s = read_state_json();
+        let running = serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| v["running"].as_bool());
+        if running == Some(false) {
+            return (true, s);
+        }
+        if std::time::Instant::now() >= deadline {
+            return (false, s);
+        }
     }
 }
 
@@ -583,7 +636,10 @@ fn ensure_monitor(cfg: AppConfig) {
                             drop(st); // 释放锁再 heal/start（二者会重新锁）
                             append_log(&label);
                             if n == 1 {
-                                crate::notify::toast("DSH 伴侣", "引擎已崩溃，正在自动重启…");
+                                crate::notify::toast(
+                                    crate::i18n::tr("DSH 伴侣", "DSH Companion"),
+                                    crate::i18n::tr("引擎已崩溃，正在自动重启…", "Engine crashed; restarting automatically…"),
+                                );
                             }
                             // catch_unwind：heal/start 万一 panic，监控线程不能静默死掉——
                             // 捕获后继续守护（这是「守护本身有守护」的最后一道）。
@@ -630,7 +686,14 @@ fn ensure_monitor(cfg: AppConfig) {
                             let msg = format!("连续崩溃 {n} 次，急救兜底后仍失败，已停止自动重启（详见 engine.log）");
                             st.status.last_error = Some(msg.clone());
                             append_log(&msg);
-                            crate::notify::toast("DSH 伴侣", &format!("引擎连续崩溃 {n} 次，已停止自动重启"));
+                            crate::notify::toast(
+                                crate::i18n::tr("DSH 伴侣", "DSH Companion"),
+                                &format!(
+                                    "{} {n} {}",
+                                    crate::i18n::tr("引擎连续崩溃", "Engine crashed"),
+                                    crate::i18n::tr("次，已停止自动重启", "times; auto-restart disabled")
+                                ),
+                            );
                         }
                     } else {
                         st.status.last_error = None; // 手动 stop，正常
@@ -665,7 +728,13 @@ fn ensure_monitor(cfg: AppConfig) {
                                     let cfg2 = cfg.clone();
                                     drop(st); // 释放锁再 kill/spawn（start 会重新锁）
                                     append_log("认领的外部 dsh 已退出，由本壳接管：自动重启引擎");
-                                    crate::notify::toast("DSH 伴侣", "外部 dsh 已退出，已自动接管并重启");
+                                    crate::notify::toast(
+                                        crate::i18n::tr("DSH 伴侣", "DSH Companion"),
+                                        crate::i18n::tr(
+                                            "外部 dsh 已退出，已自动接管并重启",
+                                            "External dsh exited; taken over and restarted",
+                                        ),
+                                    );
                                     if let Some(pid) = dead_pid {
                                         kill_tree(pid); // 原进程若残留（UI 卡但进程还在）→ 清掉防占端口
                                     }
@@ -697,7 +766,12 @@ fn ensure_monitor(cfg: AppConfig) {
                                     }
                                 }
                                 PageProbe::Degraded => {
-                                    set_stage(&format!("界面无响应…（{} 次探测失败）", st.page_misses));
+                                    set_stage(&format!(
+                                        "{}（{} {}）",
+                                        crate::i18n::tr("界面无响应…", "UI unresponsive…"),
+                                        st.page_misses,
+                                        crate::i18n::tr("次探测失败", "probe failures")
+                                    ));
                                     append_log(&format!(
                                         "页面探活失败 {}/{}：http://127.0.0.1:{}/ 不响应",
                                         st.page_misses, PAGE_PROBE_MISS_LIMIT, st.status.port
@@ -795,14 +869,154 @@ enum PageProbe {
     Dead,
 }
 
-/// 仅 taskkill 进程树（不摘 child 句柄、不改状态）——页面探活判死用：
-/// 杀掉后下一轮 monitor `try_wait` 看到退出码 → 走既有「崩溃 → 退避重启 + 诊疗升级」链路，
-/// restarts 预算与 doctor 自动生效，无需复制重启逻辑。
+/// 杀进程树（平台化）。
+///
+/// 两个平台的原始语义**不等价**，这是本函数存在的原因：
+/// - Windows `taskkill /T` 杀的是**进程树**（按父子关系），天然安全。
+/// - Unix `kill(-pid)` 杀的是**进程组**，它隐含假设 `pgid == pid`。
+///
+/// 该假设只在引擎由壳 spawn 时成立（`build_command` 调 `start_process_group` →
+/// `process_group(0)`，子进程自成一组）。但**外部认领的 dsh 是用户在终端里启的**，
+/// 它的 pgid 就是那个终端会话——直接组杀会把用户的 bash 及同会话内其他命令一起带走。
+///
+/// 因此 Unix 下先判定组长身份：自成一组才组杀，否则退回「单进程 + 递归后代」。
+/// 注意这**不改变**「关闭引擎不区分是否本壳启动」的产品语义（见 `kill_child`）：
+/// 外部 dsh 照样会被关掉，只是不再连带整个终端会话。
+///
+/// 页面探活判死用：杀掉后下一轮 monitor `try_wait` 看到退出码 → 走既有「崩溃 → 退避重启 +
+/// 诊疗升级」链路，restarts 预算与 doctor 自动生效，无需复制重启逻辑。
 fn kill_tree(pid: u32) {
-    let mut cmd = Command::new("taskkill");
-    cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
-    hide_window(&mut cmd);
-    let _ = cmd.status();
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
+        hide_window(&mut cmd);
+        let _ = cmd.status();
+    }
+    #[cfg(unix)]
+    {
+        if process_is_group_leader(pid) {
+            // 壳 spawn 的引擎：整组 TERM → 3s → 未退出再 KILL
+            kill_group(pid);
+        } else {
+            // 外部认领：先自底向上清后代（防子进程变孤儿继续占端口），再杀本体
+            let kids = descendant_pids(pid);
+            for child in kids.iter().rev() {
+                terminate_pid(*child);
+            }
+            terminate_pid(pid);
+        }
+    }
+}
+
+/// 该进程是否自成一个进程组的组长（`pgid == pid`）。
+/// 为真 ⇒ 它是自己起的（壳 spawn 时 `process_group(0)`），组杀不会波及他人。
+#[cfg(unix)]
+fn process_is_group_leader(pid: u32) -> bool {
+    // SAFETY: getpgid 是纯查询。返回 -1 表示进程已消失或无权限，
+    // 按「不是组长」处理——走保守的单进程路径，宁可漏杀也不误杀。
+    unsafe { libc::getpgid(pid as libc::pid_t) == pid as libc::pid_t }
+}
+
+/// 组杀（调用前已确认目标是组长）：先 TERM 给优雅退出机会，未果 SIGKILL。
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    // SAFETY: 负数 pid 表示「该 id 的进程组」；信号常量合法
+    let pgid = -(pid as libc::pid_t);
+    unsafe {
+        let _ = libc::kill(pgid, libc::SIGTERM);
+    }
+    // 等 3s 让引擎收尾（保存状态/释放端口）
+    std::thread::sleep(Duration::from_secs(3));
+    // SAFETY: 0 号信号仅探活，不产生副作用
+    if unsafe { libc::kill(pgid, 0) } == 0 {
+        unsafe {
+            let _ = libc::kill(pgid, libc::SIGKILL);
+        }
+    }
+}
+
+/// 终止单个进程：TERM → 短等 → 仍存活则 KILL。
+#[cfg(unix)]
+fn terminate_pid(pid: u32) {
+    let p = pid as libc::pid_t;
+    // SAFETY: 常规信号发送；pid 均来自进程表枚举，非负
+    unsafe {
+        let _ = libc::kill(p, libc::SIGTERM);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    if unsafe { libc::kill(p, 0) } == 0 {
+        unsafe {
+            let _ = libc::kill(p, libc::SIGKILL);
+        }
+    }
+}
+
+/// 递归收集 `root` 的所有后代 pid。
+///
+/// **仅 Linux 实现**：读 `/proc/<pid>/stat` 的 ppid 字段，纯文本解析，不依赖
+/// `ps`/`pgrep`（容器与精简系统常缺失，且 BSD/BusyBox 输出格式不一）。
+///
+/// 其他 Unix（macOS/BSD）返回空，调用方退化为「只杀本体」。这是**有意的取舍**：
+/// macOS 枚举子进程需 `sysctl(KERN_PROC_ALL)` 并自行定义 `kinfo_proc` 布局，
+/// 而该结构体随系统版本变化、libc 并未提供，写错即内存不安全；
+/// 相比之下，残留子进程（占端口）的危害远小于误杀用户整个终端会话。
+#[cfg(target_os = "linux")]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    // 先快照全部进程的 (pid, ppid)，再在内存里做 BFS，避免反复扫 /proc
+    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // comm 字段可能含空格与括号（如 "node (worker)"），
+        // 所以用**最后一个** ')' 切分，ppid 是其后第 2 个字段（第 1 个是 state）
+        let Some(after_comm) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+            continue;
+        };
+        let mut fields = after_comm.split_whitespace();
+        let _state = fields.next();
+        let Some(ppid) = fields.next().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        pairs.push((pid, ppid));
+    }
+
+    bfs_descendants(&pairs, root)
+}
+
+/// 从 (pid, ppid) 快照里做 BFS，收集 `root` 的全部后代。
+/// 抽成纯函数以便脱离 /proc 单测（进程树遍历的正确性不依赖读文件的方式）。
+/// 返回顺序是「父在子前」，调用方 `.rev()` 即得自底向上（先杀子、后杀父）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn bfs_descendants(pairs: &[(u32, u32)], root: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    let mut queue = vec![root];
+    while let Some(parent) = queue.pop() {
+        for &(pid, ppid) in pairs {
+            // pid != parent 守卫：防御 /proc 里异常的自引用，避免死循环
+            if ppid == parent && pid != parent && !out.contains(&pid) {
+                out.push(pid);
+                queue.push(pid);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn descendant_pids(_root: u32) -> Vec<u32> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -858,5 +1072,40 @@ mod tests {
         assert_eq!(page_probe(2, false), (3, PageProbe::Dead));
         // 判死后计数保持在超限值；恢复后清零
         assert_eq!(page_probe(3, true), (0, PageProbe::Alive));
+    }
+
+    // ---------- P0-2：Unix 进程树遍历（纯逻辑，不依赖 /proc，全平台可测） ----------
+
+    /// BFS 收集整棵子树，且保持「父在子前」的顺序（调用方 .rev() 得到自底向上）。
+    #[test]
+    fn bfs_descendants_collects_whole_subtree_in_parent_first_order() {
+        // 1 → 2 → 3 → 4（链），1 → 5（分支）；9 → 8 属于另一棵树
+        let pairs = [(2u32, 1u32), (3, 2), (4, 3), (5, 1), (9, 8)];
+        let got = bfs_descendants(&pairs, 1);
+        for expect in [2, 3, 4, 5] {
+            assert!(got.contains(&expect), "后代 {expect} 应被收集，实际 {got:?}");
+        }
+        assert!(!got.contains(&9), "不属于 root 子树的进程不应被收集");
+        assert!(!got.contains(&1), "root 自身不算后代");
+
+        let i2 = got.iter().position(|&p| p == 2).unwrap();
+        let i3 = got.iter().position(|&p| p == 3).unwrap();
+        let i4 = got.iter().position(|&p| p == 4).unwrap();
+        assert!(i2 < i3 && i3 < i4, "应保持父在子前，实际 {got:?}");
+    }
+
+    /// /proc 里若出现异常自引用（pid == ppid），必须跳过而非死循环。
+    #[test]
+    fn bfs_descendants_survives_self_reference() {
+        let pairs = [(7u32, 7u32), (8u32, 7u32)];
+        let got = bfs_descendants(&pairs, 7);
+        assert_eq!(got, vec![8], "自引用应被跳过且不陷死循环");
+    }
+
+    /// 空快照或 root 不在树中 → 空结果（非 Linux 平台退化路径同样走这里）。
+    #[test]
+    fn bfs_descendants_handles_empty_and_unrelated() {
+        assert!(bfs_descendants(&[], 1).is_empty(), "空快照应返回空");
+        assert!(bfs_descendants(&[(2, 1)], 99).is_empty(), "无关 root 应返回空");
     }
 }

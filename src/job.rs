@@ -77,14 +77,18 @@ mod imp {
 #[cfg(target_os = "windows")]
 pub use imp::*;
 
-// ---------- 非 Windows 占位（调用方回退 taskkill） ----------
+// ---------- 非 Windows 占位（调用方回退平台 kill 树 / 无作业） ----------
+// 下面两个是 Windows Job Object API 的对称占位（Windows 分支使用）；
+// Unix 下 supervisor 用进程组（start_process_group + kill -pgid）替代，故此处从未被调用。
 
 #[cfg(not(target_os = "windows"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn ensure_job() -> Option<()> {
     None
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn assign_child(_pid: u32) -> bool {
     false
 }
@@ -92,4 +96,16 @@ pub fn assign_child(_pid: u32) -> bool {
 #[cfg(not(target_os = "windows"))]
 pub fn terminate_job() -> bool {
     false
+}
+
+/// Unix 下进程树归属标记：由 supervisor 在 spawn 引擎时写入数据根下的
+/// engine.pid（进程组根 pid），kill_tree(pid) 用 kill -pgid 清理整组。
+/// 返回进程组根 pid（引擎实际 pid）。
+#[cfg(not(target_os = "windows"))]
+pub fn record_engine_pid(pid: u32) {
+    let p = crate::runtime::root_dir().join("engine.pid");
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&p, pid.to_string());
 }
