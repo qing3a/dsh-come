@@ -200,10 +200,9 @@ pub fn system_home_dir() -> PathBuf {
 
 /// 解析 `node --version` 输出的主版本号（"v22.5.1" → 22）。失败 → None。
 fn node_major_version(node_exe: &std::path::Path) -> Option<u32> {
-    let out = std::process::Command::new(node_exe)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(node_exe);
+    cmd.arg("--version");
+    let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(3))?;
     if !out.status.success() {
         return None;
     }
@@ -293,11 +292,12 @@ pub fn dsh_command(runner: &DshRunner, args: &[String]) -> std::process::Command
 }
 
 /// 查询系统 dsh 版本（`dsh --version`）。失败/不可得 → None。
+/// 带超时：start() 持锁期间会调用本函数（resolved_version），子进程挂起即拖死守护。
 pub fn dsh_version() -> Option<String> {
     let runner = dsh_runner()?;
     let args: Vec<String> = vec!["--version".to_string()];
     let mut cmd = dsh_command(&runner, &args);
-    let out = cmd.output().ok()?;
+    let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(3))?;
     if !out.status.success() {
         return None;
     }

@@ -708,7 +708,10 @@ fn is_light_theme() -> bool {
 #[cfg(not(target_os = "windows"))]
 fn is_light_theme() -> bool {
     fn output_contains(args: &[&str], keyword: &str) -> Option<bool> {
-        let out = std::process::Command::new(args[0]).args(&args[1..]).output().ok()?;
+        // 带超时：is_light_theme 在托盘主线程调用，子进程挂起会卡死整个事件循环
+        let mut cmd = std::process::Command::new(args[0]);
+        cmd.args(&args[1..]);
+        let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(2))?;
         if !out.status.success() {
             return None; // 命令存在但查询失败（如 gsettings 无此键）→ 不算命中
         }

@@ -174,7 +174,7 @@ fn compute_npm_prefix() -> Option<PathBuf> {
         c
     };
     crate::supervisor::hide_window(&mut cmd);
-    let out = cmd.output().ok()?;
+    let out = crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(3))?;
     if !out.status.success() {
         return None;
     }
@@ -224,13 +224,13 @@ pub fn which(name: &str) -> Option<PathBuf> {
     find_in(&env_dirs(), name)
 }
 
-/// 命令版本探测（`<cmd> --version` 首行）。
+/// 命令版本探测（`<cmd> --version` 首行）。带超时（node/dsh 挂起不拖死管理页请求线程）。
 fn version_of(cmd: &str) -> Option<String> {
     let exe = which(cmd)?;
     let mut c = std::process::Command::new(&exe);
     c.arg("--version");
     crate::supervisor::hide_window(&mut c);
-    let out = c.output().ok()?;
+    let out = crate::supervisor::capture_timeout(&mut c, Duration::from_secs(3))?;
     if !out.status.success() {
         return None;
     }

@@ -21,7 +21,6 @@ use crate::patchyml::{file_uri_path, looks_like_patch, parse_entries, remove_ent
 use crate::runtime;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::process::Stdio;
 
 // ===================== 模式 =====================
 
@@ -624,11 +623,12 @@ fn kill_pid(pid: u32) -> Result<(), String> {
     }
 }
 
-/// 捕获命令 stdout（Windows 下经 cmd /C；隐藏窗口）
+/// 捕获命令 stdout（Windows 下经 cmd /C；隐藏窗口）。
+/// 带超时强杀：netstat/ps/lsof 等在异常网络/系统状态下可能无限挂起，而本函数会被
+/// 监控线程 / start() 调用——挂起即拖死守护（2026-08-30 实测 netstat 挂起 → 全进程冻结）。
 fn capture(mut cmd: Command) -> Option<String> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     crate::supervisor::hide_window(&mut cmd);
-    let out = cmd.output().ok()?;
+    let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(5))?;
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 

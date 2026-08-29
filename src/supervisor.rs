@@ -136,19 +136,6 @@ pub fn status() -> SuperStatus {
     out
 }
 
-/// 设置当前阶段提示（首次安装/下载/启动中…；空字符串清除）——托盘状态行实时反馈。
-/// 同时记录 stage_since，供 status() 计算「已耗时」。
-pub fn set_stage(s: &str) {
-    if let Ok(mut st) = state().lock() {
-        st.status.stage = s.to_string();
-        st.stage_since = if s.is_empty() {
-            None
-        } else {
-            Some(std::time::Instant::now())
-        };
-    }
-}
-
 /// 秒 → 人类可读时长：「45 秒」/「1 分 24 秒」（en：「45s」/「1m 24s」）。托盘/向导展示安装已耗时。
 pub fn fmt_elapsed(secs: u64) -> String {
     if crate::i18n::is_en() {
@@ -214,6 +201,50 @@ pub fn hide_window(cmd: &mut std::process::Command) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn hide_window(_cmd: &mut std::process::Command) {}
+
+/// 带超时的命令捕获：spawn 后轮询退出，超时强杀（防 netstat / node / dsh 等子进程在
+/// 异常网络/环境下无限挂起，把持锁的线程、主线程或管理页请求线程拖死——2026-08-30
+/// 实测 `netstat` 挂起导致全进程冻结、托盘无响应）。
+/// 只适合读少量输出的探测命令（版本号/端口表）；大量输出请走文件重定向。
+/// 返回 None = 启动失败或超时被杀（调用方自行降级，绝不能阻塞）。
+pub fn capture_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    // 独立线程读管道：子进程输出超过管道缓冲（64KB）时不至于互相堵死
+    let th_out = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let th_err = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = th_out.and_then(|h| h.join().ok()).unwrap_or_default();
+                let stderr = th_err.and_then(|h| h.join().ok()).unwrap_or_default();
+                return Some(std::process::Output { status, stdout, stderr });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
 
 /// 让子进程落在独立进程组（Unix）：spawn 前调用，`kill -pgid` 可整树清理。
 /// Windows 无需此设置（Job Object / taskkill /T 负责进程树）。
@@ -344,13 +375,21 @@ fn come_patch_arg() -> Option<std::path::PathBuf> {
 
 /// 启动 dsh 引擎（已运行则幂等返回）。auto_restart 置 true → 异常退出自动拉起。
 pub fn start(cfg: &AppConfig) -> Result<(), String> {
+    // 认领探测（HTTP + netstat）可能慢/挂（2026-08-30 实测 netstat 挂起拖死全进程）：
+    // 先**无锁**探测完，再取锁应用结果，绝不在持锁状态下做网络/子进程调用。
+    let port_ok = health_ok(cfg.port, 1500);
+    let listener = if port_ok {
+        crate::doctor::listening_pid_on_port(cfg.port)
+    } else {
+        None
+    };
     let mut st = state().lock().map_err(|e| e.to_string())?;
     // 认领已在运行的 dsh：本进程 STATE 是全新时（dsh-come 刚启动 / 重启），若端口已被
     // 外部或上次会话残留的 dsh 占住，直接再 spawn 一个会因端口冲突秒退、监测线程不断重启，
     // 状态在「启动中…/已停止」间抖动——而真正服务的那个 dsh 它从不认领，正是用户看到的现象。
     // 端口已被健康 dsh 占用 → 直接认领（owned=false，stop/重启不误杀外部进程）。
-    if health_ok(cfg.port, 1500) {
-        if let Some(pid) = crate::doctor::listening_pid_on_port(cfg.port) {
+    if port_ok {
+        if let Some(pid) = listener {
             st.status.running = true;
             st.status.ready = true;
             st.status.pid = Some(pid);
@@ -705,10 +744,18 @@ fn ensure_monitor(cfg: AppConfig) {
                         // 判定死亡 → 状态降级为已停止（不自动重启——外部进程不归本壳管；
                         // 用户可手动「重启引擎」，start() 的 spawn 分支会自起 owned 实例）。
                         if st.last_adopt_probe.elapsed() >= Duration::from_secs(ADOPT_PROBE_INTERVAL_SECS) {
-                            st.last_adopt_probe = std::time::Instant::now();
-                            let port_ok = health_ok(st.status.port, 1000);
+                            let port = st.status.port;
                             let claimed = st.status.pid.unwrap_or(0);
-                            let listener = crate::doctor::listening_pid_on_port(st.status.port);
+                            st.last_adopt_probe = std::time::Instant::now();
+                            // 释放锁再探活：HTTP/netstat 可能慢/挂（2026-08-30 实测 netstat 挂起
+                            // 拖死全进程、托盘无响应），持锁等待会把主线程/管理页/心跳全部堵死。
+                            drop(st);
+                            let port_ok = health_ok(port, 1000);
+                            let listener = crate::doctor::listening_pid_on_port(port);
+                            st = match state().lock() {
+                                Ok(s) => s,
+                                Err(e) => e.into_inner(),
+                            };
                             let (misses, verdict) = adopt_probe(st.adopt_misses, port_ok, listener, claimed);
                             st.adopt_misses = misses;
                             match verdict {
@@ -755,8 +802,15 @@ fn ensure_monitor(cfg: AppConfig) {
                         // 三段式：首次失败提示（托盘状态行「界面无响应」）→ 连续失败累积 →
                         // 判死杀进程树，让下一轮 try_wait 看到退出 → 走既有「崩溃→退避重启+诊疗升级」链路。
                         if st.last_page_probe.elapsed() >= Duration::from_secs(PAGE_PROBE_INTERVAL_SECS) {
+                            let port = st.status.port;
                             st.last_page_probe = std::time::Instant::now();
-                            let port_ok = health_ok(st.status.port, 1000);
+                            // 释放锁再 HTTP 探测（同上：探活绝不在持锁状态下做）
+                            drop(st);
+                            let port_ok = health_ok(port, 1000);
+                            st = match state().lock() {
+                                Ok(s) => s,
+                                Err(e) => e.into_inner(),
+                            };
                             let (misses, verdict) = page_probe(st.page_misses, port_ok);
                             st.page_misses = misses;
                             match verdict {
@@ -766,12 +820,16 @@ fn ensure_monitor(cfg: AppConfig) {
                                     }
                                 }
                                 PageProbe::Degraded => {
-                                    set_stage(&format!(
+                                    // 就地更新 stage（不能调 set_stage——它会对 STATE 再次加锁，
+                                    // 而此处已持有锁；std Mutex 不可重入 = 自死锁。2026-08-30 实测：
+                                    // 页面探活失败一次即触发，监控线程持锁死锁，全进程冻结、托盘无响应）。
+                                    st.status.stage = format!(
                                         "{}（{} {}）",
                                         crate::i18n::tr("界面无响应…", "UI unresponsive…"),
                                         st.page_misses,
                                         crate::i18n::tr("次探测失败", "probe failures")
-                                    ));
+                                    );
+                                    st.stage_since = Some(std::time::Instant::now());
                                     append_log(&format!(
                                         "页面探活失败 {}/{}：http://127.0.0.1:{}/ 不响应",
                                         st.page_misses, PAGE_PROBE_MISS_LIMIT, st.status.port
@@ -891,7 +949,8 @@ fn kill_tree(pid: u32) {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
         hide_window(&mut cmd);
-        let _ = cmd.status();
+        // 带超时：kill_child 在 stop() 持锁期间调用，taskkill 挂起同样会拖死全进程
+        let _ = crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(5));
     }
     #[cfg(unix)]
     {
