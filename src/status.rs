@@ -1,8 +1,14 @@
-//! 管理页（轻量 HTTP 服务，std 零依赖）：状态展示 + 安装/启停操作。
+//! 管理页（轻量 HTTP 服务，std 零依赖）：状态展示 + 安装/启停/版本/插件操作。
 //!
 //! 路由：
 //! - `GET /`                     → 内嵌 HTML 管理页（状态卡片 + 按钮，JS 每 2s 轮询）
 //! - `GET /api/status`           → { eng: 守护状态, env: node/npm/dsh/winget 探测, install: 安装状态 }
+//! - `GET /api/dsh/versions`     → { current, latest, latest_tag, tags, has_update, versions }（dsh 版本管理）
+//! - `POST /api/dsh/update`      → 更新 dsh 到最新（异步）
+//! - `POST /api/dsh/install-version/<ver>` → 安装指定版本 dsh（异步）
+//! - `GET /api/plugins`          → web profile 插件清单（bundles + patches + 内置市场）
+//! - `POST /api/plugin/install`  → 安装插件（query: src=<本地路径> 或 id=<内置清单 id>，异步）
+//! - `POST /api/plugin/uninstall/<id>` → 卸载插件（patch 条目移除 / dsh plugin remove）
 //! - `POST /api/install/node`    → 触发 winget 安装 Node.js（异步）
 //! - `POST /api/install/dsh`     → 触发 npm install -g @deepseek-ai/dsh（异步）
 //! - `POST /api/dsh/uninstall`   → 纯净卸载 dsh（同步；query: keepData=0/1, cleanShim=0/1）
@@ -14,6 +20,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -261,6 +268,69 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
             "application/json; charset=utf-8",
             serde_json::to_string(&crate::installer::install_state()).unwrap_or_else(|_| "{}".into()),
         ),
+        // ---------- dsh 版本管理（2026-09-01 恢复：收敛轮误删——dsh 是 npm 包，版本切换只能走 npm，dsh web 无此能力） ----------
+        ("GET", "/api/dsh/versions") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            crate::installer::dsh_versions_json().to_string(),
+        ),
+        ("POST", "/api/dsh/update") => match crate::installer::dsh_latest() {
+            Some(v) => match crate::installer::start_dsh_install(&v) {
+                Ok(()) => ok_json(&format!(
+                    "{} {v}（{}）",
+                    crate::i18n::tr("已触发更新到", "Update to"),
+                    crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+                )),
+                Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+            },
+            None => (
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                err_json(&crate::i18n::tr(
+                    "无法查询 dsh 最新版本（网络或 npm 异常），更新失败",
+                    "Cannot query the latest dsh version (network or npm issue); update failed",
+                )),
+            ),
+        },
+        ("POST", path) if path.starts_with("/api/dsh/install-version/") => {
+            let ver = &path["/api/dsh/install-version/".len()..];
+            if ver.is_empty() {
+                ("400 Bad Request", "application/json; charset=utf-8", err_json(&crate::i18n::tr("缺少版本号", "Missing version")))
+            } else {
+                match crate::installer::start_dsh_install(ver) {
+                    Ok(()) => ok_json(&format!(
+                        "{} dsh@{ver}（{}）",
+                        crate::i18n::tr("已触发安装", "Install triggered for"),
+                        crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+                    )),
+                    Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+                }
+            }
+        }
+        // ---------- 插件管理（2026-09-01 恢复：dsh-plugin-guide §发布期「进壳的插件市场一键装/卸」本就是壳的职责；收敛轮误删） ----------
+        ("GET", "/api/plugins") => ("200 OK", "application/json; charset=utf-8", plugins_json()),
+        ("POST", path) if path == "/api/plugin/install" || path.starts_with("/api/plugin/install?") => {
+            let src = query_str(path, "src");
+            let id = query_str(path, "id");
+            match install_plugin(src.as_deref(), id.as_deref()) {
+                Ok(()) => ok_json(&crate::i18n::tr(
+                    "已触发插件安装（异步进行，稍后刷新查看结果；装完需重启引擎生效）",
+                    "Plugin install triggered (async; refresh to see the result; restart the engine after it finishes)",
+                )),
+                Err(e) => ("400 Bad Request", "application/json; charset=utf-8", err_json(&e)),
+            }
+        }
+        ("POST", path) if path.starts_with("/api/plugin/uninstall/") => {
+            let id = &path["/api/plugin/uninstall/".len()..];
+            if id.is_empty() {
+                ("400 Bad Request", "application/json; charset=utf-8", err_json(&crate::i18n::tr("缺少插件 id", "Missing plugin id")))
+            } else {
+                match uninstall_plugin(id) {
+                    Ok(msg) => ok_json(&msg),
+                    Err(e) => ("400 Bad Request", "application/json; charset=utf-8", err_json(&e)),
+                }
+            }
+        }
         // 纯净卸载 dsh（不动壳）：keepData=0 → 连 %USERPROFILE%\.dsh 一起删（默认保数据）；
         // cleanShim=1 → 连 PATH 残留 shim 一起删（默认不删）。同步执行，返回完整卸载报告。
         // 注意：前端会带 query（?keepData=…&cleanShim=…），必须 starts_with 匹配而非精确匹配。
@@ -300,6 +370,303 @@ fn install_json(kind: &str) -> (&'static str, &'static str, String) {
     }
 }
 
+// ---------- 插件管理（web profile 挂载：bundles + patches） ----------
+
+/// 核心 bundle：卸载会破坏引擎，一律禁止。管理页据此不给卸载按钮（而不是点了才被拒）。
+const CORE_BUNDLES: &[&str] = &["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+
+/// dsh profile 目录：壳启动的是 `dsh web` → 读 web profile 的挂载配置。
+/// （P1-5 后 dsh 数据在 DSH_HOME/~/.dsh，profile 子目录结构不变）
+fn profile_dir() -> PathBuf {
+    crate::runtime::system_home_dir()
+        .join("profiles")
+        .join("web")
+}
+
+/// 市场/NPM bundle 清单：读 profile/package.json 的 `dsh.profile.bundles`
+fn parse_bundles(profile_dir: &Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(profile_dir.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    v["dsh"]["profile"]["bundles"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// 收集一条 `- id:` / `name:` patch 条目（id/name 至少其一才记录）
+fn push_patch_item(
+    items: &mut Vec<serde_json::Value>,
+    id: &mut Option<String>,
+    name: &mut Option<String>,
+) {
+    if id.is_some() || name.is_some() {
+        let n = name.take().unwrap_or_default();
+        items.push(serde_json::json!({
+            "id": id.take().unwrap_or_default(),
+            "source": n,
+            "local": n.starts_with("file:"),
+        }));
+    }
+}
+
+/// 本地 patch 插件：解析 profile/cordis.patch.yml 的 `- id:` / `name:` 条目
+/// （cordis.patch.yml 是 dsh profile 的 patch overlay；`name: 'file://…'` = 本地源码硬加载）
+fn parse_patches(profile_dir: &Path) -> Vec<serde_json::Value> {
+    let Ok(content) = std::fs::read_to_string(profile_dir.join("cordis.patch.yml")) else {
+        return Vec::new();
+    };
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut cur_id: Option<String> = None;
+    let mut cur_name: Option<String> = None;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("- id:") {
+            push_patch_item(&mut items, &mut cur_id, &mut cur_name);
+            cur_id = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("name:") {
+            cur_name = Some(rest.trim().trim_matches('\'').trim_matches('"').to_string());
+        }
+    }
+    push_patch_item(&mut items, &mut cur_id, &mut cur_name);
+    items
+}
+
+/// 内置已验证插件清单（dsh-plugin-guide §发布期：「进壳的插件市场（内置 ✓已验证 清单）一键装/卸」）。
+/// 相对仓库 plugins/ 定位——开发/本机使用 exe 同级或上一级目录的 plugins/<id>。
+/// 返回 {id, name, src(绝对路径或 None), hint}。
+fn builtin_marketplace() -> Vec<serde_json::Value> {
+    const BUILTIN: &[(&str, &str)] = &[
+        ("recruit-tools", "猎头工具集（候选人/职位/推荐流水线）"),
+        ("recruit-workbench", "猎头工作台（host+client 双半）"),
+        ("mcp-apps-host", "MCP 应用宿主"),
+        ("workbench", "通用工作台"),
+    ];
+    let mut out = Vec::new();
+    for (id, desc) in BUILTIN {
+        let src = resolve_plugin_dir(id);
+        out.push(serde_json::json!({
+            "id": id,
+            "name": id,
+            "desc": desc,
+            "src": src.map(|p| p.display().to_string()),
+        }));
+    }
+    out
+}
+
+/// 定位内置插件目录。插件随分发形态走，位置不固定，故从多个锚点候选：
+///   1. 壳数据目录 `root_dir()/plugins/<id>`（安装器/自更新可能把插件放这儿）；
+///   2. exe 所在目录**向上逐层**找 `plugins/<id>`（最多 4 层）：
+///      - 生产：安装目录下 `dsh-come.exe` 旁就是 `plugins/`；
+///      - 开发：`target/release/dsh-come.exe` 向上两层即仓库根 `plugins/`；
+///   3. 当前工作目录（cargo run 时 cwd = 仓库根）。
+/// 找不到返回 None → 前端把该项置灰（比给个点了必然失败的路径诚实）。
+fn resolve_plugin_dir(id: &str) -> Option<PathBuf> {
+    const UP_LEVELS: usize = 4;
+    let mut cands: Vec<PathBuf> = Vec::new();
+    cands.push(crate::runtime::root_dir().join("plugins").join(id));
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..UP_LEVELS {
+            let Some(d) = dir else { break };
+            cands.push(d.join("plugins").join(id));
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        cands.push(cwd.join("plugins").join(id));
+    }
+    cands
+        .into_iter()
+        .find(|p| p.join("cordis.yml").is_file() || p.join("package.json").is_file())
+}
+
+/// 插件清单 JSON：bundle（市场/NPM）+ patch（本地 file://）+ 内置市场。
+fn plugins_json() -> String {
+    let dir = profile_dir();
+    serde_json::json!({
+        "profile": "web",
+        "dir": dir.display().to_string(),
+        "exists": dir.is_dir(),
+        "bundles": parse_bundles(&dir),
+        "patches": parse_patches(&dir),
+        "market": builtin_marketplace(),
+        // 下发给前端：核心包不给卸载按钮，而不是让用户点了才被后端拒绝
+        "core": CORE_BUNDLES,
+    })
+    .to_string()
+}
+
+// ---------- 插件安装 / 卸载 ----------
+
+/// 插件安装：`dsh plugin --profile web add <src>`（C5 契约，转发 pnpm add）。
+/// src 缺失时用内置清单 id 解析路径；两者都无 → 报错。
+/// 异步执行（npm/pnpm 下载可能较慢）；装完需重启引擎生效。
+fn install_plugin(src: Option<&str>, id: Option<&str>) -> Result<(), String> {
+    let src = match src {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => match id {
+            Some(i) => resolve_plugin_dir(i)
+                .map(|p| p.display().to_string())
+                .ok_or_else(|| {
+                    format!(
+                        "未找到内置插件「{i}」的本地目录（候选：root_dir/plugins、exe 同级或上一级/plugins）。可改用 src 参数指定本地插件目录。"
+                    )
+                })?,
+            None => return Err("缺少插件来源：请提供 src（本地目录路径）或 id（内置清单）".to_string()),
+        },
+    };
+    if !Path::new(&src).is_dir() {
+        return Err(format!("插件目录不存在: {src}"));
+    }
+    let Some(runner) = crate::runtime::dsh_runner() else {
+        return Err("未找到系统 dsh 命令（请先安装 dsh）".to_string());
+    };
+    let args: Vec<String> = vec![
+        "plugin".into(),
+        "--profile".into(),
+        "web".into(),
+        "add".into(),
+        src.clone(),
+    ];
+    let mut cmd = crate::runtime::dsh_command(&runner, &args);
+    crate::supervisor::hide_window(&mut cmd);
+    // 后台线程执行，结果写入安装状态（管理页轮询 /api/install/status）
+    crate::installer::spawn_task("plugin", move || {
+        // 带超时：pnpm 首次解析可能慢，给 5 分钟
+        match crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(300)) {
+            Some(out) => {
+                let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
+                if out.status.success() {
+                    (true, format!("插件安装成功（{src}）。{tail}"))
+                } else {
+                    (
+                        false,
+                        format!("插件安装失败（退出码 {:?}）。{tail}", out.status.code()),
+                    )
+                }
+            }
+            None => (false, format!("插件安装超时（5 分钟）。{src}")),
+        }
+    })?;
+    Ok(())
+}
+
+/// 插件卸载：先按本地 patch（cordis.patch.yml 条目）匹配，否则按市场 bundle（dsh plugin remove）。
+/// 核心 bundle（dsh-base / dsh-web-app）禁止卸载——卸了引擎就废了。
+fn uninstall_plugin(id: &str) -> Result<String, String> {
+    let dir = profile_dir();
+    if parse_patches(&dir).iter().any(|p| p["id"].as_str() == Some(id)) {
+        return uninstall_patch(&dir, id);
+    }
+    if parse_bundles(&dir).iter().any(|b| b == id) {
+        if CORE_BUNDLES.contains(&id) {
+            // 动态部分（id）用 format! 拼，静态模板走 i18n::tr（它只吃 &'static str）
+            return Err(format!(
+                "{id} {}",
+                crate::i18n::tr(
+                    "是 dsh 核心包，卸载会破坏引擎，已禁止",
+                    "is a dsh core package; uninstalling it would break the engine"
+                )
+            ));
+        }
+        return uninstall_bundle(id);
+    }
+    Err(format!(
+        "{} {id}",
+        crate::i18n::tr("未找到插件：", "plugin not found:")
+    ))
+}
+
+/// 本地 patch 卸载：备份后从 cordis.patch.yml 移除 `- id: <target>` 条目及其子行。
+/// 重启引擎后生效（patch overlay 是启动时组装的）。
+fn uninstall_patch(dir: &Path, target: &str) -> Result<String, String> {
+    let path = dir.join("cordis.patch.yml");
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<&str> = Vec::new();
+    let mut i = 0;
+    let mut removed = false;
+    while i < lines.len() {
+        let is_target = lines[i]
+            .trim()
+            .strip_prefix("- id:")
+            .map(|r| r.trim() == target)
+            .unwrap_or(false);
+        if is_target {
+            removed = true;
+            i += 1;
+            // 跳过该条目的子行（缩进/空/注释），直到下一个顶层项（无缩进的非注释非空行）
+            while i < lines.len() {
+                let l = lines[i];
+                if l.trim().is_empty() || l.trim_start().starts_with('#') {
+                    i += 1;
+                    continue;
+                }
+                if !l.starts_with(char::is_whitespace) {
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        out.push(lines[i]);
+        i += 1;
+    }
+    if !removed {
+        return Err(format!("cordis.patch.yml 中未找到条目: {target}"));
+    }
+    // 备份原文件（可回滚）
+    let bak = path.with_extension("patch.yml.bak");
+    let _ = std::fs::copy(&path, &bak);
+    // 已无有效条目 → 写注释空 patch（保持合法 YAML，dsh 读作空 overlay）
+    let has_entry = out
+        .iter()
+        .any(|l| l.trim_start().starts_with("- insert:") || l.trim_start().starts_with("- replace:"));
+    let new_content = if has_entry {
+        out.join("\n") + "\n"
+    } else {
+        "# 已卸载全部 patch overlay（dsh-come 管理页，原内容见 cordis.patch.yml.bak）\n".to_string()
+    };
+    std::fs::write(&path, new_content).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    Ok(format!(
+        "已卸载 patch 插件「{target}」（原文件备份为 cordis.patch.yml.bak，重启引擎后生效）"
+    ))
+}
+
+/// 市场 bundle 卸载：`dsh plugin --profile web remove <pkg>`（转发 pnpm remove）。
+fn uninstall_bundle(id: &str) -> Result<String, String> {
+    let Some(runner) = crate::runtime::dsh_runner() else {
+        return Err("未找到系统 dsh 命令".to_string());
+    };
+    let args: Vec<String> = vec![
+        "plugin".into(),
+        "--profile".into(),
+        "web".into(),
+        "remove".into(),
+        id.to_string(),
+    ];
+    let mut cmd = crate::runtime::dsh_command(&runner, &args);
+    crate::supervisor::hide_window(&mut cmd);
+    // 带超时：dsh plugin 可能慢（pnpm remove 解析），防挂死请求线程
+    match crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(120)) {
+        Some(out) => {
+            let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
+            if out.status.success() {
+                Ok(format!("已卸载 bundle「{id}」（重启引擎后生效）。{tail}"))
+            } else {
+                Err(format!("卸载 {id} 失败（退出码 {:?}）。{tail}", out.status.code()))
+            }
+        }
+        None => Err(format!("卸载 {id} 超时（120 秒）")),
+    }
+}
+
 /// 从请求 path 的 query 里解析布尔参数：`?keepData=0` / `?cleanShim=1`。
 /// 缺失或无法解析 → 用 default。
 fn query_flag(path: &str, key: &str, default: bool) -> bool {
@@ -319,6 +686,52 @@ fn query_flag(path: &str, key: &str, default: bool) -> bool {
     default
 }
 
+/// 从请求 path 的 query 里取字符串参数（URL 解码）：`?src=<path>` / `?id=<id>`。
+/// 缺失或空 → None。
+fn query_str(path: &str, key: &str) -> Option<String> {
+    let qi = path.find('?')?;
+    for pair in path[qi + 1..].split('&') {
+        let mut it = pair.splitn(2, '=');
+        if it.next() == Some(key) {
+            let v = it.next().unwrap_or("");
+            if v.is_empty() {
+                return None;
+            }
+            return Some(url_decode(v));
+        }
+    }
+    None
+}
+
+/// 简单 URL 解码（百分号解码）。src 路径可能含 %20 等转义（Windows 路径空格）。
+/// 仅处理 %XX；+ 保持原样（query 里 + 才是空格，但路径里 + 更常见，宁缺勿错）。
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +748,105 @@ mod tests {
         // 非法值 → 默认值
         assert!(query_flag("/api/dsh/uninstall?keepData=maybe", "keepData", true));
         assert!(!query_flag("/api/dsh/uninstall?cleanShim=maybe", "cleanShim", false));
+    }
+
+    /// `query_str` 读取 query 中的字符串值并做百分号解码。
+    /// Windows 插件目录常带空格（如 `C:/Program Files/...`），前端会编码成 %20。
+    #[test]
+    fn query_str_reads_and_decodes() {
+        assert_eq!(
+            query_str("/api/plugin/install?src=C%3A%2Ftmp%2Fmy%20plug", "src").as_deref(),
+            Some("C:/tmp/my plug")
+        );
+        // 多参数：取目标键，不受顺序影响
+        assert_eq!(
+            query_str("/api/plugin/install?id=recruit-tools&src=x", "id").as_deref(),
+            Some("recruit-tools")
+        );
+        // 空值 / 无 query / 键不存在 → None（不返回空串，避免后端把空路径当有效输入）
+        assert_eq!(query_str("/api/plugin/install?src=", "src"), None);
+        assert_eq!(query_str("/api/plugin/install", "src"), None);
+        assert_eq!(query_str("/api/plugin/install?id=a", "src"), None);
+        // 路径里的 + 不解码（宁缺勿错：+ 在路径中是合法字符）
+        assert_eq!(query_str("/api/plugin/install?src=a+b", "src").as_deref(), Some("a+b"));
+    }
+
+    /// 防回归（2026-09-01）：2026-08-29 收敛轮把版本管理与插件管理当「日常面」删掉，
+    /// 导致管理页版本选择/插件装卸消失。dsh 换版本只能走 npm、profile 插件挂载本就是
+    /// 壳的职责，二者都不属于「dsh 正常运行时能做的事」。这里锁住路由不许再消失。
+    #[test]
+    fn route_serves_version_and_plugin_apis() {
+        let cfg = AppConfig::default();
+        // 版本管理：200 即可（内容依赖 npm 网络，只保证路由存在且不是 404）
+        let (code, _, _) = route("GET", "/api/dsh/versions", &cfg);
+        assert_eq!(code, "200 OK", "GET /api/dsh/versions 不应 404");
+        // 插件清单：本地文件读，可解析结构
+        let (code, _, body) = route("GET", "/api/plugins", &cfg);
+        assert_eq!(code, "200 OK", "GET /api/plugins 不应 404");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("plugins 应返回合法 JSON");
+        for k in ["profile", "dir", "exists", "bundles", "patches", "market"] {
+            assert!(v.get(k).is_some(), "plugins JSON 缺少字段 {k}");
+        }
+        assert!(v["market"].is_array(), "market 应是内置插件清单数组");
+    }
+
+    /// 防回归（2026-09-01）：后端 API 还在、前端入口没了，用户看到的就是「功能消失」。
+    /// 这里锁住管理页必须保留版本卡片与插件卡片的 DOM 锚点。
+    #[test]
+    fn admin_page_exposes_version_and_plugin_controls() {
+        let html = admin_html();
+        for id in [
+            "dshver",           // 版本状态行
+            "ver-sel",          // 版本下拉
+            "btn-upd",          // 更新到最新
+            "btn-ver-install",  // 安装所选版本
+            "pl-sel",           // 内置插件清单
+            "btn-pl-install",   // 安装所选插件
+            "pl-src",           // 本地路径输入
+            "btn-pl-src",       // 从路径安装
+            "plugins",          // 已装插件列表
+        ] {
+            assert!(
+                html.contains(&format!("id=\"{id}\"")),
+                "管理页缺少控件 id=\"{id}\"（版本/插件入口被删？）"
+            );
+        }
+    }
+
+    /// 内置清单要能落到真实目录，否则前端只能把每一项都置灰、这条安装路径形同虚设。
+    /// 仓库内 `plugins/` 可能因体积（node_modules）不入库，目录不在时跳过，避免 CI 误红。
+    #[test]
+    fn resolve_plugin_dir_finds_builtin_when_present() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins");
+        if !root.is_dir() {
+            eprintln!("skip: 工作区没有 plugins/ 目录（未入库？）");
+            return;
+        }
+        let mut checked = 0;
+        for id in ["recruit-tools", "recruit-workbench", "mcp-apps-host", "workbench"] {
+            if !root.join(id).is_dir() {
+                continue;
+            }
+            assert!(
+                resolve_plugin_dir(id).is_some(),
+                "内置插件 {id} 在仓库里存在，却解析不到目录"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "plugins/ 存在但没有任何已知内置插件目录");
+    }
+
+    /// 内置插件清单：每项都要有 id/name，供管理页下拉直接用。
+    #[test]
+    fn builtin_marketplace_items_are_complete() {
+        let m = builtin_marketplace();
+        assert!(!m.is_empty(), "内置清单不应为空");
+        for item in m {
+            assert!(item["id"].as_str().is_some(), "清单项缺 id: {item}");
+            assert!(item["name"].as_str().is_some(), "清单项缺 name: {item}");
+            // src 可为空（本机没这个插件目录 → 前端会把该项置灰）
+            assert!(item.get("src").is_some(), "清单项缺 src 字段: {item}");
+        }
     }
 
     /// bind_any(0)：OS 分配随机端口，返回的端口应 >0。

@@ -36,10 +36,25 @@
 - `POST /api/start` / `POST /api/stop` → 启停 dsh
 - `POST /api/dsh/uninstall` → 纯净卸载 dsh（query: keepData=0/1, cleanShim=0/1，同步执行）
 - `GET /api/install/status` → 安装任务状态（running/ok/msg）
+- `GET /api/dsh/versions` → `{ current, latest, latest_tag, tags, has_update, versions }`（npm 查询，后端 60s 缓存）
+- `POST /api/dsh/update` → 更新 dsh 到最新版（异步，走同一个安装任务槽）
+- `POST /api/dsh/install-version/<ver>` → 安装指定版本
+- `GET /api/plugins` → `{ profile, dir, exists, bundles, patches, market }`（web profile 已装插件 + 内置清单）
+- `POST /api/plugin/install` → 装插件（`?src=<本地目录>` 或 `?id=<内置插件 id>`，C5 契约转发 pnpm，异步）
+- `POST /api/plugin/uninstall/<id>` → 卸插件（核心包 `@deepseek-ai/dsh-base` / `dsh-web-app` 禁卸）
 
-**边界（2026-08-29 收敛）**：壳管理页只留**救急面**（安装引导 / 引擎启停 / 纯净卸载）。
-插件装卸、dsh 版本管理等**日常面**一律跳转 dsh web 完成——壳不实现，也不提供对应 API
-（曾有的 `/api/plugins`、`/api/plugin/*`、`/api/dsh/versions`、`/api/dsh/update` 已删除）。
+**边界（2026-09-01 修订，取代 2026-08-29 收敛版）**：壳管理页 = **救急面 + dsh 不在跑时才修得了的事**。
+
+- 救急面：安装引导 / 引擎启停 / 纯净卸载。
+- **版本管理留在壳内**：dsh 是 npm 包，换版本只能走 npm，**dsh web 自身没有换版本的能力**，
+  「跳转 dsh web」根本走不通——故 `/api/dsh/*` 版本链保留（2026-08-29 收敛时误删，已恢复）。
+- **插件装卸留在壳内**：壳管的插件是 **profile 挂载**（`~/.dsh/profiles/web` 的
+  `package.json` bundles + `cordis.patch.yml` 条目），与 dsh 官方插件市场是两回事；
+  `docs/dsh-plugin-guide.md` 已写明「发布期：进壳的插件市场一键装/卸」本就是壳的职责
+  （2026-08-29 收敛时误删，已恢复；其中**安装**为新增能力——历史上壳只实现过卸载）。
+- 真正属于 dsh web 的日常面（会话、工作台、agent、MCP 配置等）仍一律跳转 dsh web，壳不实现。
+
+**判据**：凡 dsh 正常运行时就能做的事 → 归 dsh web；凡 dsh 没装/起不来/版本不对才好修的事 → 留壳内。
 
 **安装原则（2026-08-19 用户拍板）**：不走 npx 临时拉取——dsh 缺失就正常安装。启动引导
 （wizard）检测到缺失时**自动安装**：node 缺失 → winget（480s 超时，UAC 取消/无 winget 则提示

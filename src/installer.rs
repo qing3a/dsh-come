@@ -302,9 +302,14 @@ pub fn start_install(kind: &str) -> Result<(), String> {
     let kind = kind.to_string();
     start_install_boxed(kind.clone(), move || match kind.as_str() {
         "node" => install_node(),
-        "dsh" => install_dsh(),
+        "dsh" => install_dsh(None),
         other => (false, format!("未知安装目标: {other}")),
     })
+}
+
+/// 复用同一安装任务槽跑任意异步任务（status.rs 的插件安装用它，保持单任务互斥）。
+pub fn spawn_task(kind: &str, f: impl FnOnce() -> (bool, String) + Send + 'static) -> Result<(), String> {
+    start_install_boxed(kind.to_string(), f)
 }
 
 fn start_install_boxed(
@@ -429,17 +434,23 @@ fn install_node() -> (bool, String) {
 }
 
 /// 安装/更新/退回 dsh（npm install -g）。
-/// 安装最新版 dsh（已装则跳过）。
+/// - `None` → 安装默认 latest，已装则跳过（管理页「安装 dsh」引导场景）。
+/// - `Some("latest")` → 强制更新到最新发布版（管理页「更新到最新」）。
+/// - `Some(<版本号>)` → 安装/退回指定版本（管理页「安装所选版本」）。
 /// 关键修复（2026-08-20）：npm 必须用「与 dsh 命令同目录」的那一个——否则 npm install -g 会装到
 /// %AppData%\npm，而 PATH 里另一套 node 生态的 dsh 排前面，导致「装完版本没变」。
-fn install_dsh() -> (bool, String) {
+fn install_dsh(spec: Option<&str>) -> (bool, String) {
     if !npm_installed() {
         return (false, "未找到 npm，请先安装 Node.js（管理页「安装 Node」）".to_string());
     }
-    if dsh_installed() {
+    if spec.is_none() && dsh_installed() {
         return (true, "dsh 已安装，无需重复安装".to_string());
     }
-    let pkg = "@deepseek-ai/dsh".to_string();
+    // None → 装默认 latest；Some(spec) → @latest 或 @<版本号>
+    let pkg = match spec {
+        None => "@deepseek-ai/dsh".to_string(),
+        Some(s) => format!("@deepseek-ai/dsh@{s}"),
+    };
     let Some(npm) = npm_for_dsh().or_else(|| which("npm")) else {
         return (false, "未找到 npm 命令".to_string());
     };
@@ -464,10 +475,34 @@ fn install_dsh() -> (bool, String) {
                     ),
                 );
             }
-            (true, format!("dsh 安装成功（{pkg}）。{tail}"))
+            // 版本验证：装完 dsh --version 应与目标一致（防 PATH 解析到旧 dsh 造成假成功）
+            let ver = version_of("dsh");
+            match spec {
+                Some(want) if want != "latest" && ver.as_deref() == Some(want) => (
+                    true,
+                    format!("dsh 更新成功（{pkg}，现为 {}）。{tail}", ver.unwrap_or_default()),
+                ),
+                Some(want) => (
+                    false,
+                    format!(
+                        "npm 安装结束但 dsh 版本未变为目标（当前 {:?}，期望 {want}；npm={}，dsh 解析自 {}）。{tail} 可能是 PATH 中另一套 node 生态的 dsh 排在前，请检查 PATH 或在终端执行 `npm uninstall -g @deepseek-ai/dsh` 后重试。",
+                        ver,
+                        npm.display(),
+                        which("dsh").map(|p| p.display().to_string()).unwrap_or_default()
+                    ),
+                ),
+                None => (true, format!("dsh 安装成功（{pkg}）。{tail}")),
+            }
         }
         Err(e) => (false, format!("等待 npm 结束失败: {e}")),
     }
+}
+
+/// 触发 dsh 安装/更新/指定版本（spec：`latest` 强制更新到最新；`0.1.0-rc.5` 装指定版本）。
+/// 复用同一安装单任务 slot（安装中互斥）。
+pub fn start_dsh_install(spec: &str) -> Result<(), String> {
+    let spec = spec.to_string();
+    start_install_boxed("dsh".to_string(), move || install_dsh(Some(&spec)))
 }
 
 /// 与 dsh 命令同目录的 npm：确保 `npm install -g` / `npm uninstall -g` 的落点就是
@@ -487,6 +522,109 @@ pub fn npm_for_dsh() -> Option<PathBuf> {
         }
     }
     None
+}
+
+// ---------- npm registry 版本查询（dsh 版本管理） ----------
+//
+// 恢复说明（2026-09-01 用户反馈回归）：版本管理（/api/dsh/versions + 更新 + 指定版本安装）
+// 是壳「引导安装」的自然延伸——dsh 是 npm 包，版本切换只能走 npm，dsh web 无此能力，
+// 收敛轮「跳转 dsh web」的理由不成立，故按需恢复。恢复时做了两处加固：
+// 1. 所有子进程走 capture_timeout（29000ce 教训：裸 output() 无超时，npm 网络异常会拖死请求线程）；
+// 2. 版本比较语义保持：latest = 版本列表最后一项（rc 包 dist-tag latest 常滞后），
+//    has_update 仅在有明确最新版且与当前不同时为 true。
+
+static NPM_VIEW_CACHE: OnceLock<Mutex<Option<(std::time::Instant, String, serde_json::Value)>>> =
+    OnceLock::new();
+
+/// `npm view @deepseek-ai/dsh <field>`（field: version=latest | versions=全部），60s TTL 缓存。
+/// 网络/命令失败 → None（UI 显示「查询失败/离线」）。
+fn npm_view(field: &str) -> Option<serde_json::Value> {
+    const TTL: Duration = Duration::from_secs(60);
+    let cache = NPM_VIEW_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = cache.lock() {
+        // 缓存按 field 区分（version 是字符串、versions 是数组，不能共用一个槽）
+        if let Some((at, f, v)) = g.as_ref() {
+            if f == field && at.elapsed() < TTL {
+                return Some(v.clone());
+            }
+        }
+        let v = npm_view_uncached(field);
+        if let Some(vv) = &v {
+            *g = Some((std::time::Instant::now(), field.to_string(), vv.clone()));
+        }
+        return v;
+    }
+    npm_view_uncached(field)
+}
+
+fn npm_view_uncached(field: &str) -> Option<serde_json::Value> {
+    let npm = which("npm")?;
+    let mut cmd = std::process::Command::new(&npm);
+    cmd.args(["view", "@deepseek-ai/dsh", field]);
+    if field == "versions" || field == "dist-tags" {
+        cmd.arg("--json");
+    }
+    crate::supervisor::hide_window(&mut cmd);
+    // 带超时（npm view 走网络，异常网络下可能挂起；capture_timeout 超时强杀，绝不拖死请求线程）
+    let out = crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(15))?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if field == "versions" || field == "dist-tags" {
+        serde_json::from_str::<serde_json::Value>(&s).ok()
+    } else {
+        Some(serde_json::Value::String(s))
+    }
+}
+
+/// dsh 最新发布版 = 版本列表最后一项（rc 包的 dist-tag `latest` 常滞后于实际发布——
+/// 如 rc.8 已发布但 latest 仍指 rc.7）；列表不可得时退回 dist-tag latest。
+pub fn dsh_latest() -> Option<String> {
+    let versions = dsh_versions();
+    if let Some(v) = versions.last() {
+        return Some(v.clone());
+    }
+    npm_view("version").and_then(|v| v.as_str().map(String::from))
+}
+
+/// npm dist-tags（{latest, next, …}）：latest 是官方 stable tag，next 是预发布候选。
+pub fn dsh_dist_tags() -> serde_json::Value {
+    npm_view("dist-tags").unwrap_or(serde_json::Value::Null)
+}
+
+/// dsh 全部已发布版本（npm view versions，升序）。
+pub fn dsh_versions() -> Vec<String> {
+    npm_view("versions")
+        .and_then(|v| v.as_array().cloned())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// dsh 版本状态（管理页「dsh 版本」卡片）：
+/// current / latest（最新发布）/ latest_tag（npm stable tag）/ tags / has_update / versions。
+pub fn dsh_versions_json() -> serde_json::Value {
+    let current = version_of("dsh");
+    let latest = dsh_latest();
+    let tags = dsh_dist_tags();
+    let latest_tag = tags.get("latest").and_then(|v| v.as_str()).map(String::from);
+    let versions = dsh_versions();
+    let has_update = match (&latest, &current) {
+        (Some(l), Some(c)) => l != c,
+        (Some(_), None) => true, // 未安装 dsh（或探测失败）但有最新版
+        _ => false,
+    };
+    serde_json::json!({
+        "current": current,
+        "latest": latest,
+        "latest_tag": latest_tag,
+        "tags": tags,
+        "has_update": has_update,
+        "versions": versions,
+    })
 }
 
 /// stdout/stderr 尾部文本（各取末尾 300 字，去空行），用于错误回显。

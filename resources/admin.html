@@ -36,6 +36,11 @@ button.danger:hover{background:#fef2f2}
 .env-item{display:flex;align-items:center;gap:6px}
 .env-item .dot{width:7px;height:7px;border-radius:50%}
 .env-item .dot.ok{background:var(--ok)}.env-item .dot.bad{background:var(--bad)}.env-item .dot.muted{background:#d1d5db}
+.pl-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--border);font-size:13px}
+.pl-row:last-child{border-bottom:none}
+.pl-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.pl-uninstall{padding:4px 10px;font-size:12px;border-radius:8px;color:var(--bad);border-color:#fecaca}
+.pl-uninstall:hover{background:#fef2f2}
 #toast{position:fixed;right:16px;bottom:16px;max-width:420px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:0 10px 25px rgba(0,0,0,.12);font-size:13px;z-index:50;transform:translateY(120%);transition:transform .25s;pointer-events:none}
 #toast.show{transform:translateY(0)}
 #toast.ok{border-left:4px solid var(--ok)}
@@ -113,13 +118,28 @@ button.danger:hover{background:#fef2f2}
 </div>
 
 <div class="card">
-<h3 data-i18n="daily.card">日常操作</h3>
-<div class="status-meta" data-i18n="daily.sub">插件管理、dsh 版本管理等日常操作请到 dsh 界面完成</div>
-<div class="status-meta" style="margin-top:6px" data-i18n="daily.features">dsh 界面已提供：插件市场与装卸、版本更新、工作台管理</div>
+<h3 data-i18n="ver.card">dsh 版本</h3>
+<div class="status-meta" id="dshver" data-i18n="loading">加载中…</div>
 <div class="row">
-<button class="primary" id="btn-open-daily" onclick="openDsh()" disabled data-i18n="daily.open">打开 dsh 界面</button>
+<button id="btn-upd" onclick="updateDsh()" data-i18n="ver.update">更新到最新</button>
+<select id="ver-sel" style="padding:6px;border-radius:8px;border:1px solid #d0d7de"></select>
+<button id="btn-ver-install" onclick="installVer()" data-i18n="ver.install">安装所选版本</button>
 </div>
-<div class="status-meta" id="dailyHint" style="margin-top:8px" data-i18n="daily.hint">引擎就绪后即可打开；若引擎未运行请先在上方启动</div>
+</div>
+
+<div class="card">
+<h3 data-i18n="pl.card">插件（web profile）</h3>
+<div class="status-meta" style="margin-bottom:8px" data-i18n="pl.install.hint">从内置已验证清单或本地目录安装插件</div>
+<div class="row">
+<select id="pl-sel" style="padding:6px;border-radius:8px;border:1px solid #d0d7de"><option value="" data-i18n="pl.sel.placeholder">选择内置插件…</option></select>
+<button class="primary" id="btn-pl-install" onclick="installPlugin()" data-i18n="pl.install">安装所选插件</button>
+</div>
+<div class="row">
+<input id="pl-src" type="text" placeholder="本地插件目录路径（含 cordis.yml / package.json）" style="flex:1;min-width:220px;padding:7px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px">
+<button id="btn-pl-src" onclick="installPluginSrc()" data-i18n="pl.install.src">从路径安装</button>
+</div>
+<div class="status-meta" id="pl-info" style="margin-top:10px" data-i18n="pl.info">加载中…</div>
+<div id="plugins" style="margin-top:8px"></div>
 </div>
 </div>
 
@@ -180,10 +200,15 @@ const CSRF = "__DSH_CSRF_TOKEN__";
 const T = {
   zh: {
     'page.title':'DSH 伴侣 · 道临天下','page.sub':'DeepSeek Harness 本地守护 · 管理页',
-    'engine.card':'dsh 引擎','env.card':'运行环境','daily.card':'日常操作',
-    'daily.sub':'插件管理、dsh 版本管理等日常操作请到 dsh 界面完成',
-    'daily.features':'dsh 界面已提供：插件市场与装卸、版本更新、工作台管理',
-    'daily.open':'打开 dsh 界面','daily.hint':'引擎就绪后即可打开；若引擎未运行请先在上方启动',
+    'engine.card':'dsh 引擎','env.card':'运行环境',
+    'ver.card':'dsh 版本','ver.update':'更新到最新','ver.install':'安装所选版本',
+    'pl.card':'插件（web profile）','pl.install.hint':'从内置已验证清单或本地目录安装插件',
+    'pl.sel.placeholder':'选择内置插件…','pl.install':'安装所选插件','pl.install.src':'从路径安装',
+    'pl.info':'加载中…','pl.empty':'（空）未安装业务插件','pl.uninstall':'卸载','pl.core':'核心包 · 不可卸载',
+    'pl.load.fail':'插件清单加载失败：','pl.need.src':'请选择内置插件或输入本地插件路径','pl.confirm.uninstall':'确定卸载插件「',
+    'ver.load.fail':'版本查询失败：','ver.need':'请先选择要安装的历史版本',
+    'ver.current':'当前 ','ver.latest':'最新发布 ','ver.latest_tag':'stable tag ','ver.update.avail':'有新版本可更新',
+    'ver.no.update':'已是最新','ver.query.fail':'查询失败/离线',
     'btn.open':'打开 dsh 界面','btn.start':'启动 dsh','btn.stop':'关闭 dsh','btn.restart':'重启 dsh',
     'btn.node':'安装 Node.js','btn.dsh':'安装 dsh',
     'btn.uninstall':'纯净卸载 dsh','btn.uninstall.hint':'卸载系统 dsh（保留壳），可选清数据/残留 shim',
@@ -191,7 +216,7 @@ const T = {
     'loading':'加载中…','wait.meta':'等待状态端点响应',
     'st.running':'运行中','st.starting':'启动中','st.stopped':'已停止','st.connfail':'连接失败',
     'st.ready.meta':'dsh 已就绪 · 端口 ','st.start.meta':'dsh 正在启动','st.err.meta':'上次错误：','st.off.meta':'dsh 未在运行','st.connfail.meta':'无法连接状态端点',
-    'env.notinstalled':'未安装','env.nodata':'不可用',
+    'env.notinstalled':'未安装','env.nodata':'不可用','env.installed':'已安装',
     'm.uninstall.title':'纯净卸载 dsh',
     'm.uninstall.sub':'停止引擎并执行 <code>npm uninstall -g @deepseek-ai/dsh</code>。DSH 伴侣（壳）保留，不受影响。勾选要一并清理的内容：',
     'm.pkg':'dsh 程序包','m.pkg.must':'必清','m.pkg.d':'npm 全局包 <code>@deepseek-ai/dsh</code>（这是卸载的主体，始终执行）',
@@ -205,10 +230,15 @@ const T = {
   },
   en: {
     'page.title':'DSH Companion','page.sub':'DeepSeek Harness local daemon · admin',
-    'engine.card':'dsh engine','env.card':'Environment','daily.card':'Daily operations',
-    'daily.sub':'Plugin management, dsh version updates etc. are done in the dsh UI',
-    'daily.features':'The dsh UI provides: plugin marketplace & add/remove, version update, workbench',
-    'daily.open':'Open dsh UI','daily.hint':'Open it once the engine is ready; start the engine above first if it is not running.',
+    'engine.card':'dsh engine','env.card':'Environment',
+    'ver.card':'dsh version','ver.update':'Update to latest','ver.install':'Install selected version',
+    'pl.card':'Plugins (web profile)','pl.install.hint':'Install from the built-in verified list or a local directory',
+    'pl.sel.placeholder':'Select a built-in plugin…','pl.install':'Install selected','pl.install.src':'Install from path',
+    'pl.info':'Loading…','pl.empty':'(empty) no business plugins','pl.uninstall':'Uninstall','pl.core':'core · cannot uninstall',
+    'pl.load.fail':'Failed to load plugins: ','pl.need.src':'Select a built-in plugin or enter a local plugin path','pl.confirm.uninstall':'Uninstall plugin "',
+    'ver.load.fail':'Failed to query versions: ','ver.need':'Select a version to install first',
+    'ver.current':'current ','ver.latest':'latest ','ver.latest_tag':'stable tag ','ver.update.avail':'update available',
+    'ver.no.update':'up to date','ver.query.fail':'query failed/offline',
     'btn.open':'Open dsh UI','btn.start':'Start dsh','btn.stop':'Stop dsh','btn.restart':'Restart dsh',
     'btn.node':'Install Node.js','btn.dsh':'Install dsh',
     'btn.uninstall':'Uninstall dsh','btn.uninstall.hint':'Uninstalls system dsh (the shell stays). Optionally remove data / leftover shims.',
@@ -216,7 +246,7 @@ const T = {
     'loading':'Loading…','wait.meta':'Waiting for the status endpoint',
     'st.running':'Running','st.starting':'Starting','st.stopped':'Stopped','st.connfail':'Connection failed',
     'st.ready.meta':'dsh ready · port ','st.start.meta':'dsh is starting','st.err.meta':'Last error: ','st.off.meta':'dsh is not running','st.connfail.meta':'Cannot reach the status endpoint',
-    'env.notinstalled':'not installed','env.nodata':'unavailable',
+    'env.notinstalled':'not installed','env.nodata':'unavailable','env.installed':'installed',
     'm.uninstall.title':'Uninstall dsh',
     'm.uninstall.sub':'Stops the engine and runs <code>npm uninstall -g @deepseek-ai/dsh</code>. DSH Companion (the shell) is kept. Check what to remove as well:',
     'm.pkg':'dsh package','m.pkg.must':'always','m.pkg.d':'npm global package <code>@deepseek-ai/dsh</code> (the main target; always removed)',
@@ -258,8 +288,17 @@ function openDsh(){ window.open('http://127.0.0.1:'+DSPORT, '_blank'); }
 // ---------- 通用指令执行：busy 防重 + 结果 toast ----------
 function setBusy(btn, busy){
   if (!btn) return;
-  if (busy){ if (!btn.dataset.orig) btn.dataset.orig = btn.innerHTML; btn.innerHTML = t('busy'); btn.disabled = true; }
-  else { if (btn.dataset.orig){ btn.innerHTML = btn.dataset.orig; delete btn.dataset.orig; } }
+  if (busy){
+    if (!btn.dataset.orig) btn.dataset.orig = btn.innerHTML;
+    btn.dataset.busy = '1';                 // setEnvBtn 靠它在异步期间不抢文案
+    btn.innerHTML = t('busy'); btn.disabled = true;
+  } else {
+    if (btn.dataset.orig){ btn.innerHTML = btn.dataset.orig; delete btn.dataset.orig; }
+    delete btn.dataset.busy;
+    // 复原后交回环境状态决定文案：否则刚装好的 dsh 按钮会被 orig（「安装 dsh」）
+    // 冲掉「已安装 vX」，闪一帧再被 2s 轮询纠正。
+    updateControls();
+  }
 }
 async function runAction(url, btn, then){
   setBusy(btn, true);
@@ -370,16 +409,33 @@ function opDone(ok, msg, hint){
   opTimer = setTimeout(hideOp, 8000);
 }
 
-// ---------- 集中式按钮可用性：引擎状态 + 安装运行中 双条件 ----------
+// ---------- 集中式按钮可用性：引擎状态 + 安装运行中 + 环境已装状态 多条件 ----------
+let envInstalled = { node:'', dsh:'' };   // 最近一次 /api/status 的版本号（空 = 未装）
 function updateControls(){
   const byId = id => document.getElementById(id);
   if (byId('btn-open')) byId('btn-open').disabled = !engReady;
-  if (byId('btn-open-daily')) byId('btn-open-daily').disabled = !engReady;
   if (byId('btn-start')) byId('btn-start').disabled = engReady || installRunning;
   if (byId('btn-stop')) byId('btn-stop').disabled = !engReady || installRunning;
   if (byId('btn-restart')) byId('btn-restart').disabled = installRunning;
-  if (byId('btn-node')) byId('btn-node').disabled = installRunning;
-  if (byId('btn-dsh')) byId('btn-dsh').disabled = installRunning;
+  // 已装 → 按钮显示「已安装 vX」并禁用（版本管理走「dsh 版本」卡片）；未装 → 可安装
+  const nodeBtn = byId('btn-node'), dshBtn = byId('btn-dsh');
+  setEnvBtn(nodeBtn, envInstalled.node, 'btn.node');
+  setEnvBtn(dshBtn, envInstalled.dsh, 'btn.dsh');
+  if (byId('btn-upd')) byId('btn-upd').disabled = installRunning;
+  if (byId('btn-ver-install')) byId('btn-ver-install').disabled = installRunning;
+  if (byId('btn-pl-install')) byId('btn-pl-install').disabled = installRunning;
+  if (byId('btn-pl-src')) byId('btn-pl-src').disabled = installRunning;
+}
+function setEnvBtn(btn, version, i18nKey){
+  if (!btn) return;
+  if (btn.dataset.busy) return;              // setBusy 接管中（显示「处理中…」），不覆盖
+  if (version) {
+    btn.disabled = true;
+    btn.innerHTML = t('env.installed') + ' ' + esc(version);
+  } else {
+    btn.disabled = installRunning;
+    btn.innerHTML = t(i18nKey);
+  }
 }
 function fmtEnv(label, value, ok){
   return '<div class="env-item"><span class="dot '+(ok?'ok':'bad')+'"></span><span>'+label+' '+value+'</span></div>';
@@ -412,6 +468,8 @@ function refreshEngine(){
       meta.innerHTML = t('st.off.meta');
     }
     const v = d.env||{};
+    envInstalled.node = v.node || '';
+    envInstalled.dsh = v.dsh || '';
     document.getElementById('env').innerHTML =
       fmtEnv('Node', v.node||t('env.notinstalled'), !!v.node)+
       fmtEnv('npm', v.npm||t('env.notinstalled'), !!v.npm)+
@@ -419,6 +477,8 @@ function refreshEngine(){
       fmtEnv('winget', v.winget||t('env.nodata'), !!v.winget);
     handleInstall(d.install||{});
     updateControls();
+    throttled(3000, refreshDshVer);    // dsh 版本卡片（npm 60s 缓存 + 前端 3s 节流）
+    throttled(3000, refreshPlugins);   // 插件清单（本地文件读，3s 节流足够）
   }).catch(()=>{
     document.getElementById('engStatus').innerHTML = '<span class="badge bad">'+t('st.connfail')+'</span>';
     document.getElementById('engMeta').textContent = t('st.connfail.meta');
@@ -437,6 +497,155 @@ function handleInstall(ins){
   } else {
     hideOp();
   }
+}
+
+// ---------- 节流：2s 轮询时低频接口（版本/插件）不必每轮都打 ----------
+let throttleLast = {};
+function throttled(ms, fn){
+  const now = Date.now();
+  if (throttleLast[fn.name] && now - throttleLast[fn.name] < ms) return;
+  throttleLast[fn.name] = now;
+  fn();
+}
+
+// ---------- dsh 版本卡片（恢复 2026-09-01：收敛轮误删的版本管理） ----------
+async function refreshDshVer(){
+  try {
+    const r = await fetch('/api/dsh/versions');
+    const d = await r.json();
+    const el = document.getElementById('dshver');
+    if (!el) return;
+    const parts = [];
+    if (d.current) parts.push(t('ver.current') + esc(d.current));
+    if (d.latest) {
+      parts.push(t('ver.latest') + esc(d.latest));
+      if (d.latest_tag && d.latest_tag !== d.latest) parts.push(t('ver.latest_tag') + esc(d.latest_tag));
+      parts.push(d.has_update ? '<span style="color:#d97706;font-weight:600">'+t('ver.update.avail')+'</span>'
+                              : '<span style="color:#059669">'+t('ver.no.update')+'</span>');
+    } else {
+      // npm 查询失败/离线：不谎报「已是最新」，明确标出状态未知
+      parts.push('<span style="color:#6b7280">'+t('ver.query.fail')+'</span>');
+    }
+    el.innerHTML = parts.join(' · ');
+    // 版本下拉：当前版本排最前，其余倒序（最新的在前）
+    const sel = document.getElementById('ver-sel');
+    if (sel && d.versions && d.versions.length) {
+      const cur = d.current;
+      const list = (d.versions||[]).slice().reverse();
+      const options = ['<option value="">'+t('ver.need')+'…</option>'];
+      if (cur) options.push('<option value="'+esc(cur)+'">'+esc(cur)+'（当前）</option>');
+      for (const v of list) if (v !== cur) options.push('<option value="'+esc(v)+'">'+esc(v)+'</option>');
+      if (sel.innerHTML !== options.join('')) sel.innerHTML = options.join('');
+    }
+  } catch(e){
+    const el = document.getElementById('dshver');
+    if (el) el.innerHTML = t('ver.load.fail') + esc(e);
+  }
+}
+async function updateDsh(){
+  const btn = document.getElementById('btn-upd');
+  setBusy(btn, true);
+  try {
+    const r = await fetch('/api/dsh/update',{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || t('ver.update'), d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  setBusy(btn, false);
+  updateControls();
+}
+async function installVer(){
+  const sel = document.getElementById('ver-sel');
+  const v = sel && sel.value;
+  if (!v) { flash(t('ver.need'), false); return; }
+  const btn = document.getElementById('btn-ver-install');
+  setBusy(btn, true);
+  try {
+    const r = await fetch('/api/dsh/install-version/'+encodeURIComponent(v),{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || t('ver.install'), d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  setBusy(btn, false);
+  refreshEngine();
+}
+
+// ---------- 插件卡片（恢复 2026-09-01：dsh-plugin-guide「进壳的插件市场一键装/卸」本就是壳的职责） ----------
+async function refreshPlugins(){
+  try {
+    const r = await fetch('/api/plugins');
+    const d = await r.json();
+    // 内置市场下拉
+    const sel = document.getElementById('pl-sel');
+    if (sel && d.market && d.market.length) {
+      const opts = ['<option value="">'+t('pl.sel.placeholder')+'</option>'];
+      for (const m of d.market) {
+        const label = esc(m.name) + (m.src ? '' : '（未找到本地目录）');
+        opts.push('<option value="'+esc(m.id)+'"'+(m.src?'':' disabled')+'>'+label+'</option>');
+      }
+      if (sel.innerHTML !== opts.join('')) sel.innerHTML = opts.join('');
+    }
+    // 已装插件列表：bundles + patches
+    const box = document.getElementById('plugins');
+    if (!box) return;
+    const info = document.getElementById('pl-info');
+    if (info) info.innerHTML = d.exists
+      ? esc(d.dir)
+      : (t('env.notinstalled') + ' · ' + esc(d.dir));
+    const rows = [];
+    const core = d.core || [];        // 核心包：不可卸载，不给按钮（点了才报错体验差）
+    for (const b of (d.bundles||[])) {
+      const isCore = core.indexOf(b) >= 0;
+      rows.push('<div class="pl-row"><span class="pl-name">'+esc(b)+'</span><span class="badge muted">bundle</span>'
+        + (isCore ? '<span class="badge muted">'+t('pl.core')+'</span>'
+                  : '<button class="pl-uninstall" data-id="'+esc(b)+'" onclick="uninstallPlugin(this.dataset.id)">'+t('pl.uninstall')+'</button>')
+        + '</div>');
+    }
+    for (const p of (d.patches||[])) {
+      const label = p.id || p.source;
+      const tag = p.local ? '本地 patch' : 'patch';
+      rows.push('<div class="pl-row"><span class="pl-name">'+esc(label)+'</span><span class="badge muted">'+tag+'</span><button class="pl-uninstall" data-id="'+esc(p.id||label)+'" onclick="uninstallPlugin(this.dataset.id)">'+t('pl.uninstall')+'</button></div>');
+    }
+    box.innerHTML = rows.length ? rows.join('') : '<div class="status-meta">'+t('pl.empty')+'</div>';
+  } catch(e){
+    const box = document.getElementById('plugins');
+    if (box) box.innerHTML = '<div class="status-meta">'+t('pl.load.fail')+esc(e)+'</div>';
+  }
+}
+async function installPlugin(){
+  const sel = document.getElementById('pl-sel');
+  const id = sel && sel.value;
+  if (!id) { flash(t('pl.need.src'), false); return; }
+  const btn = document.getElementById('btn-pl-install');
+  setBusy(btn, true);
+  try {
+    const r = await fetch('/api/plugin/install?id='+encodeURIComponent(id),{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || t('pl.install'), d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  setBusy(btn, false);
+  refreshEngine();
+}
+async function installPluginSrc(){
+  const input = document.getElementById('pl-src');
+  const src = input && input.value.trim();
+  if (!src) { flash(t('pl.need.src'), false); return; }
+  const btn = document.getElementById('btn-pl-src');
+  setBusy(btn, true);
+  try {
+    const r = await fetch('/api/plugin/install?src='+encodeURIComponent(src),{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || t('pl.install'), d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  setBusy(btn, false);
+  refreshEngine();
+}
+async function uninstallPlugin(id){
+  if (!confirm(t('pl.confirm.uninstall')+id+'」？卸载后需重启引擎生效。')) return;
+  try {
+    const r = await fetch('/api/plugin/uninstall/'+encodeURIComponent(id),{method:'POST'});
+    const d = await r.json();
+    flash(d.msg, d.ok !== false);
+  } catch(e){ flash(t('reqfail')+e, false); }
+  refreshEngine();
 }
 
 refreshEngine();
