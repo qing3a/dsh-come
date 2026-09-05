@@ -581,6 +581,33 @@ fn npm_view_uncached(field: &str) -> Option<serde_json::Value> {
     }
 }
 
+/// 判断版本是否为预发布版（含 alpha/beta/rc/preview/dev 等后缀）。
+pub fn is_prerelease(version: &str) -> bool {
+    let lower = version.to_ascii_lowercase();
+    lower.contains("-alpha")
+        || lower.contains("-beta")
+        || lower.contains("-rc")
+        || lower.contains("-preview")
+        || lower.contains("-dev")
+        || lower.contains("-pre")
+}
+
+/// dsh 最新正式版（无预发布后缀）：版本列表中过滤预发布版后取最后一项；
+/// 无正式版时退回 dist-tag latest。
+pub fn dsh_latest_stable() -> Option<String> {
+    let stable: Vec<String> = dsh_versions().into_iter().filter(|v| !is_prerelease(v)).collect();
+    if let Some(v) = stable.last() {
+        return Some(v.clone());
+    }
+    npm_view("version").and_then(|v| v.as_str().map(String::from))
+}
+
+/// dsh 最新预发布版（版本列表中过滤正式版后取最后一项）。无预发布版 → None。
+pub fn dsh_latest_prerelease() -> Option<String> {
+    let pre: Vec<String> = dsh_versions().into_iter().filter(|v| is_prerelease(v)).collect();
+    pre.last().cloned()
+}
+
 /// dsh 最新发布版 = 版本列表最后一项（rc 包的 dist-tag `latest` 常滞后于实际发布——
 /// 如 rc.8 已发布但 latest 仍指 rc.7）；列表不可得时退回 dist-tag latest。
 pub fn dsh_latest() -> Option<String> {
@@ -605,10 +632,14 @@ pub fn dsh_versions() -> Vec<String> {
 }
 
 /// dsh 版本状态（管理页「dsh 版本」卡片）：
-/// current / latest（最新发布）/ latest_tag（npm stable tag）/ tags / has_update / versions。
+/// current / latest（最新发布，含预发布）/ latest_stable（最新正式版）/
+/// latest_prerelease（最新预发布版）/ latest_tag（npm stable tag）/ tags /
+/// has_update / has_prerelease_update / versions（含 is_prerelease 标记）。
 pub fn dsh_versions_json() -> serde_json::Value {
     let current = version_of("dsh");
     let latest = dsh_latest();
+    let latest_stable = dsh_latest_stable();
+    let latest_prerelease = dsh_latest_prerelease();
     let tags = dsh_dist_tags();
     let latest_tag = tags.get("latest").and_then(|v| v.as_str()).map(String::from);
     let versions = dsh_versions();
@@ -617,13 +648,31 @@ pub fn dsh_versions_json() -> serde_json::Value {
         (Some(_), None) => true, // 未安装 dsh（或探测失败）但有最新版
         _ => false,
     };
+    // 有比当前更新的预发布版（按 semver 比较，不区分当前是否预发布）
+    let has_prerelease_update = match (&latest_prerelease, &current) {
+        (Some(p), Some(c)) => crate::updater::compare_versions(p, c) == std::cmp::Ordering::Greater,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let versions_marked: Vec<serde_json::Value> = versions
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "version": v,
+                "is_prerelease": is_prerelease(v),
+            })
+        })
+        .collect();
     serde_json::json!({
         "current": current,
         "latest": latest,
+        "latest_stable": latest_stable,
+        "latest_prerelease": latest_prerelease,
         "latest_tag": latest_tag,
         "tags": tags,
         "has_update": has_update,
-        "versions": versions,
+        "has_prerelease_update": has_prerelease_update,
+        "versions": versions_marked,
     })
 }
 

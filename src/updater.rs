@@ -44,17 +44,55 @@ pub fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// 版本比较（纯函数，可测）：取 '-' 前的数字段逐位比（0.2.0 > 0.1.9；rc 后缀忽略）。
+/// 版本比较（semver 规范）：
+/// 1. 数字段（major.minor.patch）逐位比；
+/// 2. 数字段相等时，正式版（无后缀）> 预发布版（有后缀）；
+/// 3. 预发布后缀按 "." 分割，数字标识符按数值比，字符串标识符按字典序比，数字 < 字符串；
+///    标识符少的版本更低（前面都相等时）。
 pub fn compare_versions(a: &str, b: &str) -> Ordering {
-    let nums = |s: &str| -> Vec<u64> {
-        s.split('-')
+    fn parse_core(s: &str) -> (Vec<u64>, Option<&str>) {
+        let mut parts = s.splitn(2, '-');
+        let core: Vec<u64> = parts
             .next()
             .unwrap_or(s)
             .split('.')
             .filter_map(|p| p.parse::<u64>().ok())
-            .collect()
-    };
-    let (na, nb) = (nums(a), nums(b));
+            .collect();
+        (core, parts.next())
+    }
+    fn cmp_pre(a: Option<&str>, b: Option<&str>) -> Ordering {
+        match (a, b) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater, // 正式版 > 预发布版
+            (Some(_), None) => Ordering::Less,
+            (Some(pa), Some(pb)) => {
+                let ia: Vec<&str> = pa.split('.').collect();
+                let ib: Vec<&str> = pb.split('.').collect();
+                for i in 0..ia.len().max(ib.len()) {
+                    match (ia.get(i), ib.get(i)) {
+                        (None, None) => continue,
+                        (None, Some(_)) => return Ordering::Less, // 标识符少的更低
+                        (Some(_), None) => return Ordering::Greater,
+                        (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                            (Ok(nx), Ok(ny)) => match nx.cmp(&ny) {
+                                Ordering::Equal => continue,
+                                o => return o,
+                            },
+                            (Ok(_), Err(_)) => return Ordering::Less, // 数字 < 字符串
+                            (Err(_), Ok(_)) => return Ordering::Greater,
+                            (Err(_), Err(_)) => match x.cmp(y) {
+                                Ordering::Equal => continue,
+                                o => return o,
+                            },
+                        },
+                    }
+                }
+                Ordering::Equal
+            }
+        }
+    }
+    let (na, pa) = parse_core(a);
+    let (nb, pb) = parse_core(b);
     for i in 0..na.len().max(nb.len()) {
         let (x, y) = (na.get(i).copied().unwrap_or(0), nb.get(i).copied().unwrap_or(0));
         match x.cmp(&y) {
@@ -62,7 +100,7 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
             o => return o,
         }
     }
-    Ordering::Equal
+    cmp_pre(pa, pb)
 }
 
 /// 平台后缀：更新清单与发布资产按平台命名（update-win / update-macos / update-linux，
@@ -121,16 +159,8 @@ fn touch_check() {
     }
 }
 
-/// 检查更新：force=false 时每日最多自动检查一次（上次结果返回）；有新版本 → 记录到
-/// AVAILABLE 并返回。失败返回 Err（网络/解析），调用方自行提示，不阻塞守护。
-pub fn check(force: bool) -> Result<Option<UpdateInfo>, String> {
-    if !force {
-        let last = last_check_ts();
-        if last != 0 && now_ts().saturating_sub(last) < 24 * 3600 {
-            return Ok(available()); // 今日已查过：返回上次结果（可能 None）
-        }
-    }
-    touch_check();
+/// latest 通道：GitHub Releases `latest` 标签的 update-{platform}.json（正式版）。
+fn fetch_latest_update_info() -> Result<UpdateInfo, String> {
     let url = format!(
         "https://github.com/qing3a/dsh-come/releases/latest/download/update-{}.json",
         platform_suffix()
@@ -146,9 +176,80 @@ pub fn check(force: bool) -> Result<Option<UpdateInfo>, String> {
     if !resp.status().is_success() {
         return Err(format!("检查更新失败（HTTP {}）", resp.status()));
     }
-    let info: UpdateInfo = resp
+    resp.json().map_err(|e| format!("更新清单解析失败: {e}"))
+}
+
+/// next 通道：GitHub API 查最新的 prerelease release，取其 update-{platform}.json 资产。
+/// 无预发布版 → 返回 Err（调用方退回 latest 或提示无更新）。
+fn fetch_next_update_info() -> Result<UpdateInfo, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))?;
+    // GitHub API 要求 User-Agent
+    let resp = client
+        .get("https://api.github.com/repos/qing3a/dsh-come/releases?per_page=30")
+        .header("User-Agent", "dsh-come-updater")
+        .send()
+        .map_err(|e| format!("查询 GitHub Releases 失败（网络）: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("查询 GitHub Releases 失败（HTTP {}）", resp.status()));
+    }
+    let releases: Vec<serde_json::Value> = resp
         .json()
-        .map_err(|e| format!("更新清单解析失败: {e}"))?;
+        .map_err(|e| format!("Releases 列表解析失败: {e}"))?;
+    // 过滤 prerelease=true，按 published_at 降序，取最新
+    let asset_name = format!("update-{}.json", platform_suffix());
+    let mut prereleases: Vec<&serde_json::Value> = releases
+        .iter()
+        .filter(|r| r.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false))
+        .collect();
+    prereleases.sort_by(|a, b| {
+        let ta = a.get("published_at").and_then(|v| v.as_str()).unwrap_or("");
+        let tb = b.get("published_at").and_then(|v| v.as_str()).unwrap_or("");
+        tb.cmp(ta) // 降序：新的在前
+    });
+    for release in &prereleases {
+        if let Some(assets) = release.get("assets").and_then(|v| v.as_array()) {
+            if let Some(asset) = assets.iter().find(|a| {
+                a.get("name").and_then(|n| n.as_str()) == Some(asset_name.as_str())
+            }) {
+                if let Some(url) = asset.get("browser_download_url").and_then(|u| u.as_str()) {
+                    let resp = client
+                        .get(url)
+                        .send()
+                        .map_err(|e| format!("下载预发布更新清单失败（网络）: {e}"))?;
+                    if !resp.status().is_success() {
+                        return Err(format!("下载预发布更新清单失败（HTTP {}）", resp.status()));
+                    }
+                    return resp.json().map_err(|e| format!("预发布更新清单解析失败: {e}"));
+                }
+            }
+        }
+    }
+    Err("无可用的预发布版本（next 通道暂无更新）".to_string())
+}
+
+/// 检查更新：force=false 时每日最多自动检查一次（上次结果返回）；有新版本 → 记录到
+/// AVAILABLE 并返回。失败返回 Err（网络/解析），调用方自行提示，不阻塞守护。
+/// 通道由 config.update_channel 决定：latest（正式版，默认）/ next（预发布版）。
+/// next 通道查询失败时自动退回 latest（避免预发布暂无时用户完全无法更新）。
+pub fn check(force: bool) -> Result<Option<UpdateInfo>, String> {
+    if !force {
+        let last = last_check_ts();
+        if last != 0 && now_ts().saturating_sub(last) < 24 * 3600 {
+            return Ok(available()); // 今日已查过：返回上次结果（可能 None）
+        }
+    }
+    touch_check();
+    let channel = crate::config::load().update_channel;
+    let info = match channel.as_str() {
+        "next" => match fetch_next_update_info() {
+            Ok(info) => info,
+            Err(_) => fetch_latest_update_info()?, // next 无更新时退回 latest
+        },
+        _ => fetch_latest_update_info()?,
+    };
     let newer = compare_versions(&info.version, &current_version()) == Ordering::Greater;
     let result = newer.then_some(info);
     set_available(result.clone());
@@ -396,10 +497,22 @@ mod tests {
     }
 
     #[test]
-    fn version_compare_ignores_suffix() {
-        // rc 后缀（dsh 版本形态 0.1.1-rc.2）→ 取数字段比较
+    fn version_compare_semver_prerelease() {
+        // 正式版 > 预发布版（semver 核心规则）
+        assert_eq!(compare_versions("0.1.2", "0.1.2-alpha.1"), Ordering::Greater);
+        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2"), Ordering::Less);
+        // alpha < beta < rc（预发布类型优先级）
+        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-beta.1"), Ordering::Less);
+        assert_eq!(compare_versions("0.1.2-beta.1", "0.1.2-rc.1"), Ordering::Less);
+        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-rc.1"), Ordering::Less);
+        // 同类型预发布版，数字大的更新
+        assert_eq!(compare_versions("0.1.2-alpha.2", "0.1.2-alpha.1"), Ordering::Greater);
+        assert_eq!(compare_versions("0.1.2-rc.2", "0.1.2-rc.1"), Ordering::Greater);
+        // 数字段不同时，后缀不影响比较结果
         assert_eq!(compare_versions("0.1.1-rc.2", "0.1.0"), Ordering::Greater);
         assert_eq!(compare_versions("0.2.0", "0.1.1-rc.2"), Ordering::Greater);
+        // 相等
+        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-alpha.1"), Ordering::Equal);
     }
 
     #[test]

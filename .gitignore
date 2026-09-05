@@ -13,3 +13,14 @@ node_modules/
 .zcode/
 # WorkBuddy 工作区数据（记忆/会话日志，本地私有，勿提交）
 .workbuddy/
+
+# 调试临时产物（会话分析脚本 + 依赖源码快照 + 截图草稿）
+.tmp/
+*.png
+!resources/*.png
+!docs/*.png
+out.txt
+err.txt
+dsh-stdout.txt
+dsh-stderr.txt
+theme-test.html

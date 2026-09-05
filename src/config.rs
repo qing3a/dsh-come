@@ -34,6 +34,10 @@ pub struct AppConfig {
     /// 界面语言：zh / en（默认 zh；改动需重启生效，i18n.rs 首次调用时缓存）
     #[serde(default = "default_lang")]
     pub lang: String,
+    /// 更新通道：latest（正式版，默认）/ next（预发布版，含 alpha/beta/rc）。
+    /// latest 走 GitHub Releases `latest` 标签；next 取最新的 prerelease release。
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
 }
 
 const DEFAULT_STATUS_PORT: u16 = 3081;
@@ -50,6 +54,10 @@ fn default_lang() -> String {
     "zh".to_string()
 }
 
+fn default_update_channel() -> String {
+    "latest".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -62,6 +70,7 @@ impl Default for AppConfig {
             status_port: default_status_port(),
             exit_close_engine: true,
             lang: default_lang(),
+            update_channel: default_update_channel(),
         }
     }
 }

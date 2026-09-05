@@ -307,6 +307,35 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 }
             }
         }
+        // ---------- 启动器配置（更新通道等） ----------
+        ("GET", "/api/config") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            serde_json::json!({
+                "update_channel": cfg.update_channel,
+                "lang": cfg.lang,
+                "exit_close_engine": cfg.exit_close_engine,
+                "status_port": cfg.status_port,
+            })
+            .to_string(),
+        ),
+        ("POST", path) if path.starts_with("/api/config/update-channel/") => {
+            let channel = &path["/api/config/update-channel/".len()..];
+            if channel != "latest" && channel != "next" {
+                ("400 Bad Request", "application/json; charset=utf-8", err_json("通道必须是 latest 或 next"))
+            } else {
+                let mut new_cfg = cfg.clone();
+                new_cfg.update_channel = channel.to_string();
+                crate::config::save(&new_cfg);
+                crate::updater::set_available(None);
+                ok_json(&format!(
+                    "{} {}（{}）",
+                    crate::i18n::tr("更新通道已切换为", "Update channel switched to"),
+                    channel,
+                    crate::i18n::tr("下次检查更新生效", "takes effect on next update check")
+                ))
+            }
+        }
         // ---------- 插件管理（2026-09-01 恢复：dsh-plugin-guide §发布期「进壳的插件市场一键装/卸」本就是壳的职责；收敛轮误删） ----------
         ("GET", "/api/plugins") => ("200 OK", "application/json; charset=utf-8", plugins_json()),
         ("POST", path) if path == "/api/plugin/install" || path.starts_with("/api/plugin/install?") => {

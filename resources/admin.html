@@ -124,6 +124,13 @@ button.danger:hover{background:#fef2f2}
 <button id="btn-upd" onclick="updateDsh()" data-i18n="ver.update">更新到最新</button>
 <select id="ver-sel" style="padding:6px;border-radius:8px;border:1px solid #d0d7de"></select>
 <button id="btn-ver-install" onclick="installVer()" data-i18n="ver.install">安装所选版本</button>
+<div class="row" style="margin-top:8px">
+<label style="font-size:13px;color:var(--muted);margin-right:8px" data-i18n="cfg.update_channel">伴侣更新通道</label>
+<select id="channel-sel" onchange="switchChannel(this.value)" style="padding:6px;border-radius:8px;border:1px solid #d0d7de">
+<option value="latest" data-i18n="cfg.channel.latest">正式版（latest）</option>
+<option value="next" data-i18n="cfg.channel.next">预发布版（next）</option>
+</select>
+</div>
 </div>
 </div>
 
@@ -207,8 +214,8 @@ const T = {
     'pl.info':'加载中…','pl.empty':'（空）未安装业务插件','pl.uninstall':'卸载','pl.core':'核心包 · 不可卸载',
     'pl.load.fail':'插件清单加载失败：','pl.need.src':'请选择内置插件或输入本地插件路径','pl.confirm.uninstall':'确定卸载插件「',
     'ver.load.fail':'版本查询失败：','ver.need':'请先选择要安装的历史版本',
-    'ver.current':'当前 ','ver.latest':'最新发布 ','ver.latest_tag':'stable tag ','ver.update.avail':'有新版本可更新',
-    'ver.no.update':'已是最新','ver.query.fail':'查询失败/离线',
+    'ver.current':'当前 ','ver.latest':'最新发布 ','ver.latest_stable':'最新正式版 ','ver.latest_prerelease':'最新预发布版 ','ver.latest_tag':'stable tag ','ver.update.avail':'有新版本可更新','ver.prerelease.avail':'有预发布版可更新','ver.prerelease':'预发布',
+    'ver.no.update':'已是最新','ver.query.fail':'查询失败/离线','cfg.update_channel':'伴侣更新通道','cfg.channel.latest':'正式版（latest）','cfg.channel.next':'预发布版（next）','cfg.channel.switch.fail':'切换通道失败：',
     'btn.open':'打开 dsh 界面','btn.start':'启动 dsh','btn.stop':'关闭 dsh','btn.restart':'重启 dsh',
     'btn.node':'安装 Node.js','btn.dsh':'安装 dsh',
     'btn.uninstall':'纯净卸载 dsh','btn.uninstall.hint':'卸载系统 dsh（保留壳），可选清数据/残留 shim',
@@ -237,8 +244,8 @@ const T = {
     'pl.info':'Loading…','pl.empty':'(empty) no business plugins','pl.uninstall':'Uninstall','pl.core':'core · cannot uninstall',
     'pl.load.fail':'Failed to load plugins: ','pl.need.src':'Select a built-in plugin or enter a local plugin path','pl.confirm.uninstall':'Uninstall plugin "',
     'ver.load.fail':'Failed to query versions: ','ver.need':'Select a version to install first',
-    'ver.current':'current ','ver.latest':'latest ','ver.latest_tag':'stable tag ','ver.update.avail':'update available',
-    'ver.no.update':'up to date','ver.query.fail':'query failed/offline',
+    'ver.current':'current ','ver.latest':'latest ','ver.latest_stable':'latest stable ','ver.latest_prerelease':'latest prerelease ','ver.latest_tag':'stable tag ','ver.update.avail':'update available','ver.prerelease.avail':'prerelease update available','ver.prerelease':'prerelease',
+    'ver.no.update':'up to date','ver.query.fail':'query failed/offline','cfg.update_channel':'Companion update channel','cfg.channel.latest':'Stable (latest)','cfg.channel.next':'Prerelease (next)','cfg.channel.switch.fail':'Failed to switch channel: ',
     'btn.open':'Open dsh UI','btn.start':'Start dsh','btn.stop':'Stop dsh','btn.restart':'Restart dsh',
     'btn.node':'Install Node.js','btn.dsh':'Install dsh',
     'btn.uninstall':'Uninstall dsh','btn.uninstall.hint':'Uninstalls system dsh (the shell stays). Optionally remove data / leftover shims.',
@@ -477,7 +484,8 @@ function refreshEngine(){
       fmtEnv('winget', v.winget||t('env.nodata'), !!v.winget);
     handleInstall(d.install||{});
     updateControls();
-    throttled(3000, refreshDshVer);    // dsh 版本卡片（npm 60s 缓存 + 前端 3s 节流）
+    throttled(3000, refreshDshVer);
+    loadConfig();    // dsh 版本卡片（npm 60s 缓存 + 前端 3s 节流）
     throttled(3000, refreshPlugins);   // 插件清单（本地文件读，3s 节流足够）
   }).catch(()=>{
     document.getElementById('engStatus').innerHTML = '<span class="badge bad">'+t('st.connfail')+'</span>';
@@ -517,30 +525,58 @@ async function refreshDshVer(){
     if (!el) return;
     const parts = [];
     if (d.current) parts.push(t('ver.current') + esc(d.current));
-    if (d.latest) {
-      parts.push(t('ver.latest') + esc(d.latest));
-      if (d.latest_tag && d.latest_tag !== d.latest) parts.push(t('ver.latest_tag') + esc(d.latest_tag));
-      parts.push(d.has_update ? '<span style="color:#d97706;font-weight:600">'+t('ver.update.avail')+'</span>'
-                              : '<span style="color:#059669">'+t('ver.no.update')+'</span>');
+    if (d.latest_stable || d.latest) {
+      const stable = d.latest_stable || d.latest;
+      parts.push(t('ver.latest_stable') + esc(stable));
+      if (d.latest_tag && d.latest_tag !== stable) parts.push(t('ver.latest_tag') + esc(d.latest_tag));
+      const hasStableUpdate = d.current && stable !== d.current;
+      if (hasStableUpdate) {
+        parts.push('<span style="color:#d97706;font-weight:600">'+t('ver.update.avail')+'</span>');
+      } else if (!d.has_prerelease_update) {
+        parts.push('<span style="color:#059669">'+t('ver.no.update')+'</span>');
+      }
+      if (d.latest_prerelease && d.has_prerelease_update) {
+        parts.push('<span style="color:#7c3aed;font-weight:600">'+t('ver.latest_prerelease')+esc(d.latest_prerelease)+' · '+t('ver.prerelease.avail')+'</span>');
+      }
     } else {
-      // npm 查询失败/离线：不谎报「已是最新」，明确标出状态未知
       parts.push('<span style="color:#6b7280">'+t('ver.query.fail')+'</span>');
     }
     el.innerHTML = parts.join(' · ');
-    // 版本下拉：当前版本排最前，其余倒序（最新的在前）
     const sel = document.getElementById('ver-sel');
     if (sel && d.versions && d.versions.length) {
       const cur = d.current;
-      const list = (d.versions||[]).slice().reverse();
+      const list = (d.versions||[]).map(v => typeof v === 'string' ? {version:v, is_prerelease:false} : v)
+        .slice().reverse();
       const options = ['<option value="">'+t('ver.need')+'…</option>'];
       if (cur) options.push('<option value="'+esc(cur)+'">'+esc(cur)+'（当前）</option>');
-      for (const v of list) if (v !== cur) options.push('<option value="'+esc(v)+'">'+esc(v)+'</option>');
+      for (const item of list) {
+        const v = item.version;
+        if (v === cur) continue;
+        const tag = item.is_prerelease ? '（'+t('ver.prerelease')+'）' : '';
+        const style = item.is_prerelease ? ' style="color:#7c3aed"' : '';
+        options.push('<option value="'+esc(v)+'"'+style+'>'+esc(v)+tag+'</option>');
+      }
       if (sel.innerHTML !== options.join('')) sel.innerHTML = options.join('');
     }
   } catch(e){
     const el = document.getElementById('dshver');
     if (el) el.innerHTML = t('ver.load.fail') + esc(e);
   }
+}
+async function loadConfig(){
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    const sel = document.getElementById('channel-sel');
+    if (sel && d.update_channel) sel.value = d.update_channel;
+  } catch(e){ /* 配置加载失败不阻塞 */ }
+}
+async function switchChannel(ch){
+  try {
+    const r = await fetch('/api/config/update-channel/'+encodeURIComponent(ch),{method:'POST'});
+    const d = await r.json();
+    flash(d.msg || ch, d.ok !== false);
+  } catch(e){ flash(t('cfg.channel.switch.fail')+e, false); }
 }
 async function updateDsh(){
   const btn = document.getElementById('btn-upd');
