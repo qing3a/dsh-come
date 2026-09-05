@@ -339,6 +339,69 @@ mod tests {
         assert!(!args.iter().any(|a| a.starts_with("@deepseek-ai")), "无 npm 包名: {args:?}");
     }
 
+    /// 测试专用：独立的临时 DSH_COME_HOME（串行测试下 set_var 安全）
+    fn test_home(tag: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "come-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("DSH_COME_HOME", &home);
+        home
+    }
+
+    /// ensure_come_patch + ensure_hlp_plugin 全流程（合一个测试串行跑：
+    /// 三场景都依赖 DSH_COME_HOME 环境变量，Rust 测试并行会互相覆盖 env）
+    #[test]
+    fn come_patch_and_hlp_plugin_flow() {
+        // 场景 1：旧 patch（只有 dsh-market）→ 自动追加 HLP 条目且保留原内容
+        let home = test_home("append");
+        let p = home.join("come.patch.yml");
+        std::fs::write(&p, "- id: dsh-market\n  config:\n    allowRestart: false\n").unwrap();
+        ensure_come_patch().unwrap();
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("dsh-market"), "原条目保留");
+        assert!(content.contains("- insert:"), "HLP 条目用 insert 结构（新增插件语义）");
+        assert!(content.contains("- id: dsh-light-cockpit"), "追加 HLP 条目");
+        assert!(content.contains("name: '@hlp/dsh-light-cockpit'"), "HLP 条目用 npm 包名（共享层解析）");
+        assert!(content.contains("mcp-client-mail"), "mail MCP 桥条目（@好友业务工具）");
+        assert!(content.contains("mcp-client-biz"), "biz MCP 桥条目");
+        assert!(content.contains("/business/mail-collab-server"), "MCP server 指共享层插件内 business 路径");
+        std::fs::remove_dir_all(&home).ok();
+
+        // 场景 2：已有 HLP 条目 → 幂等跳过（不重复追加）
+        let home = test_home("idem");
+        let p = home.join("come.patch.yml");
+        std::fs::write(&p, "- id: dsh-market\n  config:\n    allowRestart: false\n- id: dsh-light-cockpit\n  name: 'file:///x/plugins/dsh-light-cockpit'\n").unwrap();
+        ensure_come_patch().unwrap();
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            content.matches("- id: dsh-light-cockpit").count(),
+            1,
+            "不重复追加"
+        );
+        std::fs::remove_dir_all(&home).ok();
+
+        // 场景 3：exe 旁 hlp-plugin 源 → 部署到共享层（DSH_HOME 隔离），第二次幂等跳过
+        let home = test_home("deploy");
+        let dsh_home = home.join("dsh");
+        std::env::set_var("DSH_HOME", &dsh_home);
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let src = exe_dir.join("hlp-plugin");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("package.json"), r#"{"name":"@hlp/dsh-light-cockpit","version":"0.0.2"}"#).unwrap();
+        assert!(ensure_hlp_plugin().unwrap(), "应从源部署");
+        let dst = dsh_home.join("profiles").join("node_modules").join("@hlp").join("dsh-light-cockpit");
+        assert!(dst.join("package.json").is_file(), "部署后 manifest 存在于共享层");
+        assert!(!ensure_hlp_plugin().unwrap(), "第二次应幂等跳过");
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&src).ok();
+    }
+
     // ---------- 数据目录迁移（P1-5：dsh-desktop → dsh-come） ----------
 
     fn temp_base(tag: &str) -> std::path::PathBuf {
@@ -399,30 +462,165 @@ pub fn come_patch_path() -> PathBuf {
     root_dir().join("come.patch.yml")
 }
 
-/// 幂等写入 come.patch.yml（内容固定；已存在则跳过）。
-/// dsh-market 未安装时该覆盖条目在加载期仅 warn 一条（applyEntryPatches 对
-/// 未找到的 entry 报 warning 后跳过），无副作用。
+/// HLP 插件的部署目录 = DSH 共享层 `~/.dsh/profiles/node_modules/@hlp/dsh-light-cockpit`。
+/// v1.4.0 实测：patch `name: file:///<root>/plugins/...` 不可行——① Node ESM 拒绝目录导入；
+/// ② 指到 index.js 后宿主依赖（@deepseek-ai/dsh-tools 等）解析断链（只有 profiles/node_modules
+/// 下才有宿主包）。故发行版附带插件**部署进共享层**（依赖链完整），patch 用 npm 包名加载。
+/// 环境隔离：经 DSH_HOME（system_home_dir），测试可指临时目录。
+pub fn hlp_plugin_dir() -> PathBuf {
+    system_home_dir()
+        .join("profiles")
+        .join("node_modules")
+        .join("@hlp")
+        .join("dsh-light-cockpit")
+}
+
+/// 递归复制目录（ensure_hlp_plugin 用；插件树无符号链接，不做链接特殊处理）
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
+    let mut copied = 0u64;
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copied += copy_dir_all(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+fn parse_json_file(p: &std::path::Path) -> bool {
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some()
+}
+
+/// 确保发行版附带的 HLP 插件已部署到 root\plugins\dsh-light-cockpit。
+/// 源候选（按序）：① exe 同目录 hlp-plugin\dsh-light-cockpit（发行版布局）
+/// ② exe 同目录 hlp-plugin（解压形态，目录内容即插件根）。
+/// 已部署（package.json 可解析）→ 跳过（幂等）；无任何可用源 → Ok(false)
+/// （patch 条目加载不到仅 warn 一条，与 dsh-market 未装同语义，不阻塞启动）。
+/// 返回 Ok(true) 表示本次执行了部署。
+pub fn ensure_hlp_plugin() -> std::io::Result<bool> {
+    let dst = hlp_plugin_dir();
+    let manifest = dst.join("package.json");
+    if manifest.is_file() && parse_json_file(&manifest) {
+        return Ok(false); // 幂等：已部署且 manifest 可解析
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates: Vec<PathBuf> = match &exe_dir {
+        Some(d) => vec![
+            d.join("hlp-plugin").join("dsh-light-cockpit"),
+            d.join("hlp-plugin"),
+        ],
+        None => vec![],
+    };
+    for src in candidates {
+        let marker = src.join("package.json");
+        if !marker.is_file() || !parse_json_file(&marker) {
+            continue;
+        }
+        if let Some(dir) = dst.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // 旧目录残留（损坏态）先清掉，避免半旧半新
+        if dst.exists() {
+            std::fs::remove_dir_all(&dst)?;
+        }
+        copy_dir_all(&src, &dst)?;
+        if manifest.is_file() && parse_json_file(&manifest) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// come.patch.yml 的 HLP 段：**insert 结构**（新增插件语义；裸条目 = 对已有插件做
+/// 配置覆盖——dsh-market 那种——新装插件必须 `- insert:`，否则 DSH 报 entry not found，
+/// v1.4.0 实测）。三条：① HLP 宿主插件（npm 包名，共享层解析）；② biz MCP 桥；
+/// ③ mail MCP 桥——@好友 mentionable 的业务工具（mcp__mail-collab__*）必须经静态
+/// mcp-client 注册才进 Agent 工具面板（launch 不注入工具，v1.2.7 实证）。
+fn hlp_patch_entries() -> String {
+    let base = hlp_plugin_dir().to_string_lossy().replace('\\', "/");
+    let biz = format!("{base}/business/biz-cockpit-mcp");
+    let mail = format!("{base}/business/mail-collab-server");
+    format!(
+        "- insert:\n    \
+         - id: dsh-light-cockpit\n      \
+         name: '@hlp/dsh-light-cockpit'\n    \
+         - id: mcp-client-biz\n      \
+         name: '@deepseek-ai/dsh-mcp-client'\n      \
+         config:\n        \
+         transport: stdio\n        \
+         serverName: biz-cockpit\n        \
+         command: node\n        \
+         args:\n          \
+         - '{biz}/index.js'\n        \
+         cwd: '{biz}'\n        \
+         toolCallTimeoutMs: 30000\n        \
+         failOnStartupError: true\n    \
+         - id: mcp-client-mail\n      \
+         name: '@deepseek-ai/dsh-mcp-client'\n      \
+         config:\n        \
+         transport: stdio\n        \
+         serverName: mail-collab\n        \
+         command: node\n        \
+         args:\n          \
+         - '{mail}/index.js'\n        \
+         cwd: '{mail}'\n        \
+         toolCallTimeoutMs: 60000\n        \
+         failOnStartupError: true\n"
+    )
+}
+
+/// 幂等维护 come.patch.yml（内容感知，不再"存在即跳过"）：
+/// - 不存在 → 写默认（dsh-market + dsh-light-cockpit）
+/// - 存在但缺 dsh-light-cockpit 条目 → **追加**（旧用户升级后自动获得 HLP，不破坏原配置）
+/// - 已含 → 原样跳过
+/// dsh-market / dsh-light-cockpit 未安装/未部署时条目在加载期仅 warn 一条
+/// （applyEntryPatches 对未找到的 entry 报 warning 后跳过），无副作用。
 pub fn ensure_come_patch() -> std::io::Result<()> {
     let p = come_patch_path();
-    if p.is_file() {
-        return Ok(());
-    }
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(
-        &p,
+    const HLP_MARKER: &str = "dsh-light-cockpit";
+    if p.is_file() {
+        let existing = std::fs::read_to_string(&p).unwrap_or_default();
+        if !existing.contains(HLP_MARKER) {
+            let mut updated = existing;
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str("# dsh-come v0.3+：HLP 协议层 + LocalApp 生态（root\\plugins\\dsh-light-cockpit）\n");
+            updated.push_str(&hlp_patch_entries());
+            std::fs::write(&p, updated)?;
+        }
+        return Ok(());
+    }
+    let mut content = String::from(
         "# dsh-come 壳维护的 patch overlay：dsh-market 安装后禁止其 detached 一键重启\n\
          # （dsh 进程由壳 supervisor 接管：崩溃自愈 / 退避重启 / 滚动日志）\n\
          - id: dsh-market\n\
          \x20 config:\n\
-         \x20   allowRestart: false\n",
-    )
+         \x20   allowRestart: false\n\
+         # HLP 协议层 + LocalApp 生态（v0.3+，root\\plugins\\dsh-light-cockpit）\n",
+    );
+    content.push_str(&hlp_patch_entries());
+    std::fs::write(&p, content)
 }
 
 /// 确保目录骨架存在（首次运行补齐）
 pub fn ensure_layout() -> std::io::Result<()> {
     std::fs::create_dir_all(logs_dir())?;
+    ensure_hlp_plugin()?;
     ensure_come_patch()?;
     Ok(())
 }
