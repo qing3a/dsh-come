@@ -120,6 +120,8 @@ pub enum Remedy {
     CleanPartialDownloads { paths: Vec<PathBuf> },
     /// 结束孤儿 dsh/node 进程（pid 列表）
     KillOrphan { pids: Vec<u32> },
+    /// 修复 HLP 插件（备份 .bak → 重装；Green：可完整重建）
+    RepairHlpPlugin,
 }
 
 fn remedy_desc(r: &Remedy) -> &'static str {
@@ -130,6 +132,7 @@ fn remedy_desc(r: &Remedy) -> &'static str {
         Remedy::BackupAndResetProfilePatch => "备份并重置 cordis.patch.yml 为最小可用",
         Remedy::CleanPartialDownloads { .. } => "清理 .dsh 下的残缺下载临时文件",
         Remedy::KillOrphan { .. } => "结束孤儿 dsh/node 进程",
+        Remedy::RepairHlpPlugin => "修复 HLP 插件（备份后重装到共享层）",
     }
 }
 
@@ -198,7 +201,33 @@ fn scan_all(cfg: &AppConfig) -> Vec<Finding> {
     probe_profile_patch(&mut out);
     probe_partial_downloads(&mut out);
     probe_orphan_processes(cfg, &mut out);
+    probe_hlp_plugin(&mut out);
     out
+}
+
+/// 7) HLP 插件（@hlp/dsh-light-cockpit）：未装 / 损坏（manifest 或关键目录缺失）→ 黄级建议修复
+/// （Green 可自动：修复带 .bak 备份 + 失败回滚，零数据风险——插件目录不含用户 data）
+fn probe_hlp_plugin(out: &mut Vec<Finding>) {
+    let dir = crate::runtime::hlp_plugin_dir();
+    if !dir.exists() {
+        out.push(Finding {
+            id: "hlp-plugin-missing",
+            title: "HLP 插件未安装（LocalApp 生态不可用）".to_string(),
+            evidence: format!("{} 不存在；dsh-come 附带的 LocalApp 生态需要它", dir.display()),
+            blast: Blast::Green,
+            remedy: Some(Remedy::RepairHlpPlugin),
+        });
+        return;
+    }
+    if !crate::hlp_plugin::healthy() {
+        out.push(Finding {
+            id: "hlp-plugin-corrupt",
+            title: "HLP 插件目录损坏（manifest/入口/业务 Server 缺失）".to_string(),
+            evidence: format!("{} 存在但结构不完整，MCP Server 或插件加载会失败", dir.display()),
+            blast: Blast::Green,
+            remedy: Some(Remedy::RepairHlpPlugin),
+        });
+    }
 }
 
 /// 1) 运行器缺失：找不到系统 dsh → 无法启动（不可自愈，仅上报，提示安装）
@@ -467,6 +496,10 @@ fn apply_remedy(r: &Remedy) -> Result<String, String> {
             }
             Ok(format!("已清理 {n} 个残缺下载文件/目录"))
         }
+        Remedy::RepairHlpPlugin => match crate::hlp_plugin::repair() {
+            Ok(msg) => Ok(msg),
+            Err(e) => Err(e),
+        },
         Remedy::KillOrphan { pids } => {
             let mut n = 0;
             for pid in pids {

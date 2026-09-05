@@ -14,6 +14,7 @@
 
 mod config;
 mod doctor;
+mod hlp_plugin;
 mod i18n;
 mod installer;
 mod job;

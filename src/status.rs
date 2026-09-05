@@ -307,6 +307,59 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 }
             }
         }
+        // ---------- HLP 插件 + LocalApp 生态（v1.4.0 P0-2/P0-3） ----------
+        ("GET", "/api/hlp/status") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            crate::hlp_plugin::status_json().to_string(),
+        ),
+        ("POST", "/api/hlp/install") => match crate::installer::spawn_task("hlp-plugin", || {
+            match crate::hlp_plugin::install() {
+                Ok(m) => (true, m),
+                Err(e) => (false, e),
+            }
+        }) {
+            Ok(()) => ok_json(&crate::i18n::tr(
+                "已触发 HLP 插件安装（异步进行，稍后刷新查看结果）",
+                "HLP plugin install triggered (async; refresh to see the result)",
+            )),
+            Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+        },
+        ("POST", "/api/hlp/repair") => match crate::installer::spawn_task("hlp-repair", || {
+            match crate::hlp_plugin::repair() {
+                Ok(m) => (true, m),
+                Err(e) => (false, e),
+            }
+        }) {
+            Ok(()) => ok_json(&crate::i18n::tr(
+                "已触发 HLP 插件修复（备份旧目录后重装，异步进行）",
+                "HLP plugin repair triggered (backup + reinstall, async)",
+            )),
+            Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+        },
+        ("GET", "/api/hlp/apps") => ("200 OK", "application/json; charset=utf-8", hlp_apps_json(cfg)),
+        ("GET", "/api/hlp/data-dir") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            serde_json::json!({
+                "path": crate::runtime::hlp_plugin_dir().join("data").display().to_string(),
+            })
+            .to_string(),
+        ),
+        ("POST", "/api/hlp/open-data-dir") => {
+            let dir = crate::runtime::hlp_plugin_dir().join("data");
+            let _ = std::fs::create_dir_all(&dir);
+            #[cfg(target_os = "windows")]
+            let opener = "explorer";
+            #[cfg(target_os = "macos")]
+            let opener = "open";
+            #[cfg(all(unix, not(target_os = "macos")))]
+            let opener = "xdg-open";
+            match std::process::Command::new(opener).arg(&dir).spawn() {
+                Ok(_) => ok_json(&format!("已打开 {}", dir.display())),
+                Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&format!("打开目录失败：{e}"))),
+            }
+        }
         // ---------- 启动器配置（更新通道等） ----------
         ("GET", "/api/config") => (
             "200 OK",
@@ -1135,6 +1188,41 @@ fn ok_json(msg: &str) -> (&'static str, &'static str, String) {
         "application/json; charset=utf-8",
         serde_json::json!({ "ok": true, "msg": msg }).to_string(),
     )
+}
+
+/// v1.4.0 P0-3：代理 dsh web 的 /hlp/apps/registry → 管理页 LocalApp 列表。
+/// dsh 未启动/超时（5s）→ { error, apps: [] }（管理页显示友好提示，不报错）。
+fn hlp_apps_json(cfg: &AppConfig) -> String {
+    let url = format!("http://127.0.0.1:{}/hlp/apps/registry", cfg.port);
+    let apps = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()
+        .and_then(|c| c.get(&url).send().ok())
+        .and_then(|r| r.json::<serde_json::Value>().ok())
+        .and_then(|v| {
+            v.get("apps").and_then(|a| a.as_array()).map(|arr| {
+                arr.iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "id": a.get("id").cloned().unwrap_or_default(),
+                            "title": a.get("title").cloned().unwrap_or_default(),
+                            "icon": a.get("icon").cloned().unwrap_or_default(),
+                            "builtin": a.get("builtin").cloned().unwrap_or(serde_json::json!(false)),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+    match apps {
+        Some(list) => serde_json::json!({ "ok": true, "port": cfg.port, "apps": list }).to_string(),
+        None => serde_json::json!({
+            "ok": false,
+            "error": crate::i18n::tr("dsh 未运行或未就绪，启动 dsh 后查看 App 列表", "dsh is not running; start dsh to see the app list"),
+            "apps": [],
+        })
+        .to_string(),
+    }
 }
 
 fn err_json(msg: &str) -> String {

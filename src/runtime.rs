@@ -476,7 +476,7 @@ pub fn hlp_plugin_dir() -> PathBuf {
 }
 
 /// 递归复制目录（ensure_hlp_plugin 用；插件树无符号链接，不做链接特殊处理）
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
+pub(crate) fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
     let mut copied = 0u64;
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

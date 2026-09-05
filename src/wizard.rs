@@ -86,6 +86,33 @@ pub fn start(cfg: &AppConfig) {
                         return;
                     }
                 }
+                // v1.4.0 P0-2：HLP 插件（LocalApp 生态）缺失时自动安装（node → dsh → hlp 第三步）。
+                // 无发行版附带源时报错并提示管理页——不阻塞引擎启动（HLP 缺席只影响 LocalApp）。
+                if crate::hlp_plugin::detect_version().is_none() {
+                    supervisor::log("未检测到 HLP 插件，自动安装（LocalApp 生态）…");
+                    match crate::installer::spawn_task("hlp-plugin", || match crate::hlp_plugin::install() {
+                            Ok(m) => (true, m),
+                            Err(e) => (false, e),
+                        }) {
+                        Err(e) => {
+                            supervisor::log(&format!("HLP 插件安装无法启动：{e}（管理页可手动安装）"));
+                            crate::notify::toast(
+                                crate::i18n::tr("DSH 伴侣", "DSH Companion"),
+                                crate::i18n::tr(
+                                    "HLP 插件安装失败，请打开管理页查看。",
+                                    "HLP plugin install failed; open the admin page.",
+                                ),
+                            );
+                        }
+                        Ok(()) => {
+                            if !wait_install(600) {
+                                supervisor::log("HLP 插件安装超时/失败，请到管理页重试");
+                            } else {
+                                supervisor::log("HLP 插件安装完成");
+                            }
+                        }
+                    }
+                }
                 // 安装完成：fall-through 走下面的 start 重试（attempt 上限仍兜底防死循环）
             }
             if attempt >= 3 {

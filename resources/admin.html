@@ -135,6 +135,18 @@ button.danger:hover{background:#fef2f2}
 </div>
 
 <div class="card">
+<h3>HLP LocalApp 生态</h3>
+<div class="status-meta" id="hlp-status" style="margin-bottom:8px">加载中…</div>
+<div class="row">
+<button id="btn-hlp-install" onclick="hlpAct('install')" style="display:none">安装 HLP 插件</button>
+<button id="btn-hlp-repair" onclick="hlpAct('repair')">修复 HLP 插件</button>
+<button onclick="hlpOpenData()">打开数据目录</button>
+</div>
+<div class="status-meta" style="margin-top:10px;margin-bottom:4px;font-weight:600">LocalApp 列表</div>
+<div class="status-meta" id="hlp-apps" style="max-height:160px;overflow-y:auto">加载中…</div>
+</div>
+
+<div class="card">
 <h3 data-i18n="pl.card">插件（web profile）</h3>
 <div class="status-meta" style="margin-bottom:8px" data-i18n="pl.install.hint">从内置已验证清单或本地目录安装插件</div>
 <div class="row">
@@ -318,6 +330,51 @@ async function runAction(url, btn, then){
   if (then) await then();
   updateControls();
 }
+// ---------- HLP LocalApp 生态（v1.4.0） ----------
+let hlpBusy = false;
+async function refreshHlp(){
+  if (hlpBusy) return; hlpBusy = true;
+  try {
+    const st = await (await fetch('/api/hlp/status')).json();
+    const el = document.getElementById('hlp-status');
+    const btnI = document.getElementById('btn-hlp-install');
+    if (st.installed) {
+      el.innerHTML = '插件 <b>v'+(st.version||'?')+'</b> · ' +
+        (st.healthy ? '<span class="badge good">健康</span>' : '<span class="badge bad">损坏</span>') +
+        ' <span style="color:#888;font-size:11px">'+st.path+'</span>';
+      btnI.style.display = 'none';
+      document.getElementById('btn-hlp-repair').style.display = st.healthy ? '' : '';
+    } else {
+      el.innerHTML = '<span class="badge bad">未安装</span>' + (st.bundled ? '（检测到发行版附带插件包）' : '（未发现发行版附带插件包）');
+      btnI.style.display = '';
+    }
+    const appsEl = document.getElementById('hlp-apps');
+    const ar = await (await fetch('/api/hlp/apps')).json();
+    if (ar.ok && ar.apps && ar.apps.length) {
+      appsEl.innerHTML = ar.apps.map(a =>
+        '<div style="padding:2px 0">'+(a.icon||'🔧')+' <b>'+a.title+'</b> <span style="color:#888;font-size:11px">'+a.id+'</span>'+(a.builtin?'':' <span style="color:#888;font-size:10px">动态</span>')+'</div>'
+      ).join('');
+    } else {
+      appsEl.textContent = ar.error || '（无 App）';
+    }
+  } catch(e) { /* 管理页自身网络抖动，静默等下轮 */ }
+  hlpBusy = false;
+}
+async function hlpAct(kind){
+  const btnId = kind==='install' ? 'btn-hlp-install' : 'btn-hlp-repair';
+  const btn = document.getElementById(btnId);
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '执行中…（复制插件约需 1 分钟）';
+  try { const r = await fetch('/api/hlp/'+kind, {method:'POST'}); const j = await r.json();
+    alert(j.ok ? (j.msg||'已触发') : ('失败：'+(j.error||j.detail||''))); }
+  catch(e){ alert('请求失败：'+e); }
+  btn.disabled = false; btn.textContent = old;
+  setTimeout(refreshHlp, 1500);
+}
+async function hlpOpenData(){
+  const r = await fetch('/api/hlp/open-data-dir', {method:'POST'});
+  if (!r.ok) alert('打开失败');
+}
+
 function act(a){
   const ids = { start:'btn-start', stop:'btn-stop', 'install/node':'btn-node', 'install/dsh':'btn-dsh' };
   runAction('/api/'+a, document.getElementById(ids[a] || ''), () => { refreshEngine(); });
@@ -487,6 +544,7 @@ function refreshEngine(){
     throttled(3000, refreshDshVer);
     loadConfig();    // dsh 版本卡片（npm 60s 缓存 + 前端 3s 节流）
     throttled(3000, refreshPlugins);   // 插件清单（本地文件读，3s 节流足够）
+    throttled(5000, refreshHlp);       // HLP 插件 + LocalApp（5s 节流）
   }).catch(()=>{
     document.getElementById('engStatus').innerHTML = '<span class="badge bad">'+t('st.connfail')+'</span>';
     document.getElementById('engMeta').textContent = t('st.connfail.meta');
