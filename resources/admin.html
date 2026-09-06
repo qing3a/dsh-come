@@ -345,7 +345,7 @@ async function refreshHlp(){
       btnI.style.display = 'none';
       document.getElementById('btn-hlp-repair').style.display = st.healthy ? '' : '';
     } else {
-      el.innerHTML = '<span class="badge bad">未安装</span>' + (st.bundled ? '（检测到发行版附带插件包）' : '（未发现发行版附带插件包）');
+      el.innerHTML = '<span class="badge bad">未安装</span>' + (st.bundled ? '（检测到随附插件包）' : '（未发现随附插件包）');
       btnI.style.display = '';
     }
     const appsEl = document.getElementById('hlp-apps');

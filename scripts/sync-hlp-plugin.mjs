@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// sync-hlp-plugin.mjs —— 发布前把最新 HLP 插件同步进 dsh-come 的发行版插件源（v1.4.0 P1-7）
+// sync-hlp-plugin.mjs —— 发布前把最新 HLP 插件同步进 dsh-come 的随附插件源（v1.4.0 P1-7）
 //
 // 用法：node scripts/sync-hlp-plugin.mjs [--hlp-path <HLP 开发仓库路径>]
 //   默认 HLP 路径 = <dsh-come>/../Harness-LocalApp
 // 行为：
 //   1. 校验 HLP 源插件完整性（package.json / index.js / lib / 两个业务 Server 的 package.json）
 //   2. 清理目标 target/release/hlp-plugin/dsh-light-cockpit 后整体复制，
-//      排除：.git、*.log、测试脚本、data/（真实邮箱/询价数据不进发行版——运行时数据由插件自建）
+//      排除：.git、*.log、测试脚本、data/（真实邮箱/询价数据不进安装包——运行时数据由插件自建）
 //   3. 验证：目标 package.json version 非空、business/*/node_modules 存在、文件数 > 阈值
 //   4. 输出同步报告；任何一步失败 exit 1
 
@@ -53,7 +53,7 @@ cpSync(srcPlugin, dstPlugin, {
     if (segs.some((s) => EXCLUDE_DIRS.has(s))) return false;
     const name = path.basename(src);
     if (EXCLUDE_FILES.has(name) || EXCLUDE_RE.some((re) => re.test(name))) return false;
-    // 顶层测试/迁移脚本不进发行版（business 内的 test-* 保留无妨？统一排除测试）
+    // 顶层测试/迁移脚本不进安装包（business 内的 test-* 保留无妨？统一排除测试）
     if (segs.length <= 1 && isTestFile(name)) return false;
     return true;
   },
