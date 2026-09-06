@@ -150,6 +150,14 @@ node scripts/sync-hlp-plugin.mjs
 
 [`dsh-tray`](https://github.com/qing3a/dsh-tray) 是 DSH **进程内**插件（托盘/气泡通知，随 DSH 生灭）；本项目的 **进程外** 壳（守护 DSH 进程）。两者互补不冗余：同一用户装了两边时，dsh-tray 检测到 dsh-come 会自动降级。
 
+## 贡献
+
+欢迎社区贡献！见 [CONTRIBUTING.md](CONTRIBUTING.md)（Rust 开发 / 关键设计约束 / 发布流程）。
+
+- 🐛 [报告 Bug](https://github.com/qing3a/dsh-come/issues/new?labels=bug&template=bug_report.md)
+- 💡 [请求功能](https://github.com/qing3a/dsh-come/issues/new?labels=enhancement&template=feature_request.md)
+- 🤝 [提交 PR](https://github.com/qing3a/dsh-come/pulls)
+
 ## 许可
 
 MIT。托盘图标为代码生成的 32x32 圆角图标（`src/tray.rs`），与 DeepSeek AI 商标无关联。

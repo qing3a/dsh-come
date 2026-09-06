@@ -362,6 +362,68 @@ fn ui_url_from_log(text: &str, port: u16) -> Option<String> {
     None
 }
 
+/// 从 URL 提取 token 值（`?token=xxx` / `&token=xxx`）。无 token → None。
+pub fn url_token(url: &str) -> Option<String> {
+    url.split_once("token=")
+        .map(|(_, t)| t.split_whitespace().next().unwrap_or("").to_string())
+}
+
+/// 上次成功打开界面的引擎状态（pid + token）：托盘「打开界面」据此判断
+/// 引擎是否重启过（pid 变化 = 新引擎 = 需要等新 token 落盘）。
+static LAST_OPENED: OnceLock<Mutex<Option<(Option<u32>, String)>>> = OnceLock::new();
+
+/// 上次成功打开界面时的引擎 pid（None = 从未成功打开过/当时无引擎）。
+pub fn last_opened_engine_pid() -> Option<u32> {
+    LAST_OPENED
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|g| g.as_ref().and_then(|(p, _)| *p))
+}
+
+/// 记录一次成功用于打开界面的 URL（token 随引擎重启更换，pid 用于判断「是否同一引擎」）。
+pub fn note_opened_url(url: &str) {
+    let Some(_token) = url_token(url) else {
+        return;
+    };
+    let pid = status().pid;
+    if let Ok(mut g) = LAST_OPENED.get_or_init(|| Mutex::new(None)).lock() {
+        *g = Some((pid, _token));
+    }
+}
+
+/// 打开 dsh 界面用：轮询「当前日志末次带 token URL 能否 HTTP 2xx」，能 → 返回该 URL。
+///
+/// 为什么需要验证：dsh 0.1.2-rc.1 起每次启动换 token，stdout 重定向有落盘延迟——
+/// 引擎刚就绪时 `ui_url()` 拿到的可能还是旧引擎的过期 token（访问 401「打不开」）。
+/// 用真实 HTTP 请求验证是最终真理：token 有效 → 200 立即返回（认领/引擎稳定场景
+/// 零等待）；无效 → 401 → 继续轮询等新 token 落盘。
+///
+/// 超过 `timeout` 仍验证不过 → 回退当前 `ui_url()`（至少打开浏览器，用户可手动重开）。
+pub fn ui_url_ready(timeout: Duration) -> String {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build();
+    let Some(client) = client.ok() else {
+        return ui_url(); // HTTP 客户端构建失败：退化直接返回当前 URL
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let url = ui_url();
+        let ok = client
+            .get(&url)
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if ok {
+            return url;
+        }
+        if std::time::Instant::now() >= deadline {
+            return url;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// 健康探测：优先专用健康口 `/api/health`（需 dsh 侧插件暴露，见 resources/dsh-health-plugin.js），
 /// 缺失自动降级到首页 `/` —— 不依赖插件也能探活。
 pub fn health_ok(port: u16, timeout_ms: u64) -> bool {
@@ -1267,6 +1329,18 @@ mod tests {
             Some("http://localhost:3080/?token=Y"),
             "localhost 写法同样识别"
         );
+    }
+
+    /// url_token：提取 `?token=` / `&token=` 后的值；无 token → None。
+    #[test]
+    fn url_token_extracts_token_value() {
+        assert_eq!(
+            url_token("http://127.0.0.1:3080/?token=CnQsRt-DnEeX23eiXDlBOubV3ZMcQSQASi5iZLBF894")
+                .as_deref(),
+            Some("CnQsRt-DnEeX23eiXDlBOubV3ZMcQSQASi5iZLBF894")
+        );
+        assert_eq!(url_token("http://127.0.0.1:3080/"), None);
+        assert_eq!(url_token("http://127.0.0.1:3080/?token=").as_deref(), Some(""));
     }
 
     // ---------- P0-2：Unix 进程树遍历（纯逻辑，不依赖 /proc，全平台可测） ----------

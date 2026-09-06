@@ -162,8 +162,12 @@ pub fn start(cfg: &AppConfig) {
                     }
                     if became_ready {
                         // 打开 dsh 引擎本体界面：用 engine.log 里的带 token URL
-                        // （dsh 0.1.2-rc.1 起 web 默认本地鉴权，裸 URL 会 401）
-                        let dsh_url = supervisor::ui_url();
+                        // （dsh 0.1.2-rc.1 起 web 默认本地鉴权，裸 URL 会 401）。
+                        // HTTP 验证等待（最多 8s）：新引擎刚就绪时 stdout 可能还没
+                        // flush，日志里还是旧引擎的过期 token → 直接读会 401「打不开」
+                        let dsh_url =
+                            supervisor::ui_url_ready(Duration::from_secs(8));
+                        supervisor::note_opened_url(&dsh_url);
                         crate::tray::open_browser(&dsh_url);
                         // 同时打开 dsh-come 管理页：动态读实际端口（固定端口被占时可能回退随机端口）
                         if let Some(p) = crate::status::admin_port() {

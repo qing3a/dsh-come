@@ -16,6 +16,7 @@ use crate::config;
 use crate::runtime;
 use crate::supervisor;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// 主线程最后活动时刻（unix 秒）：refresh() 每 1s 刷新；心跳线程据此检测主循环是否卡死
 static MAIN_ACTIVITY: AtomicU64 = AtomicU64::new(0);
@@ -91,8 +92,18 @@ impl ApplicationHandler<UserEvent> for App {
                     std::process::exit(0);
                 } else if ev.id == ids.open {
                     // 点击时解析：dsh 0.1.2-rc.1 起 web 默认本地鉴权，需带 engine.log
-                    // 里末次打印的 token URL（引擎重启会换 token，不能缓存）
-                    open_browser(&supervisor::ui_url());
+                    // 里末次打印的 token URL（引擎重启会换 token，不能缓存）。
+                    // 竞态兜底：引擎刚重启、新 token 未落盘时 ui_url() 会取到旧 token →
+                    // 401。引擎 pid 与上次成功打开时相同 → token 稳定直接用；不同/未知
+                    // → HTTP 验证等待新 token 落盘（最多 3s）再开。
+                    let st = supervisor::status();
+                    let url = if st.pid == supervisor::last_opened_engine_pid() {
+                        supervisor::ui_url()
+                    } else {
+                        supervisor::ui_url_ready(Duration::from_secs(3))
+                    };
+                    supervisor::note_opened_url(&url);
+                    open_browser(&url);
                 } else if ev.id == ids.open_admin {
                     // 动态查实际管理页端口（固定端口被占时回退随机端口）
                     if let Some(p) = crate::status::admin_port() {
