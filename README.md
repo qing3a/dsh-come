@@ -1,12 +1,69 @@
-# dsh-come｜DSH 伴侣
+# dsh-come｜开源 DSH 桌面发行版
 
 > 🌐 [English README](README.en.md)
 
-把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的 Windows 桌面壳**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。
+**dsh-come —— 开源的 DSH 桌面发行版：一键安装 DSH + LocalApp 生态，让普通人也能用 AI Agent 协作。**
+
+把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的桌面应用**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。v0.3 起内置 **HLP 协议层与 LocalApp 生态**（[Harness-LocalApp](https://github.com/qing3a/harness-localapp)），安装即得 7 个开箱可用的业务应用。
+
+## 发行版包含
+
+```
+dsh-come（桌面发行版）
+├── 桌面壳      托盘常驻 / 进程守护（崩溃自愈）/ 安装引导 / 自愈诊疗 / 管理页 / 自更新
+├── DSH 引擎    系统安装的 dsh（缺失时自动安装；版本跟随系统 npm）
+├── HLP 协议层   @hlp/dsh-light-cockpit（协议方法 + App 托管 + @协作好友 + 信任治理）
+└── LocalApp 生态 7 个开箱可用的业务应用（见下表）
+```
+
+## 内置 LocalApp
+
+| App | 图标 | 用途 |
+|---|---|---|
+| 数据驾驶舱 | 📊 | 销售 KPI / 月度趋势 / Top 客户 / CSV 导入（DuckDB 持久化） |
+| 邮箱协作 | ✉️ | 真实邮箱承载的群组话题协作、@协作好友、好友活跃度、待办/询价提取 |
+| 轻量 CRM | 👥 | 客户列表 / 订单明细 / 询价线索池 / 统一联系人视图 |
+| 日程管理 | 📅 | 日程 / 待办 / 从邮件自动提取日程导入 |
+| 项目看板 | 📋 | 项目 / 三列看板 / 任务拖拽流转 |
+| 官网询价组件 | 💬 | 客户侧一键询价表单（可发布公网）+ 分享到 X + 反馈入口 |
+| 产品目录 | 📦 | 老板侧产品库（增删改查 / 筛选 / 持久化） |
+
+## 什么是 HLP
+
+**HLP（Harness LocalApp Protocol）** 是本发行版的协议层（`io.deepseek.harness.localapps`）：定义业务应用如何被 Agent 宿主发现、渲染、编排与「深入对话」（用户在对话里 `@协作好友` 即联动业务工具）。应用 = 声明式元数据 + 标准 MCP 业务 Server + iframe 纯表现层（iframe 不持 MCP 客户端，即使被 XSS 攻破也无法直接发起工具调用）。完整规范见 [HLP 协议 v1.0 正式规范](https://github.com/qing3a/harness-localapp/blob/master/docs/HLP-Protocol-v1.0_正式规范.md)。
 
 > **面向谁**：已经装了 `dsh`（或 Node.js）的人，想要一个常驻托盘、双击即启动、挂了自动拉起的桌面入口。缺失时管理页/向导会自动安装（node 用 winget、dsh 用 `npm install -g`，不走 npx 临时拉取）。开发者直接用官方 `npx @deepseek-ai/dsh web` 亦可，本项目的价值是把引擎守护和桌面体验包起来。
 
 > 🚀 **当前方向（2026-08-27 更新，v4）**：**越做越薄 + 壳零 UI**——壳只做三件事：守护（profile 组）/ 引导安装 / 环境清单（come.patch.yml），外加自更新；一切用户可见的东西都是 dsh 插件（详见 `docs/direction-v4.md`）。不做插件市场（归 [dsh-market](https://github.com/dsh-market/dsh-market) 插件）、不做版本管理（跟随系统 dsh）、不做状态页（dsh web UI 已有）。
+
+## 架构（四层）
+
+```
+┌──────────────────────────────────────────────┐
+│  dsh-come 桌面壳（Rust）                      │
+│  托盘 / 进程守护（崩溃自愈）/ 安装引导 / 管理页 │
+└──────────────────┬───────────────────────────┘
+                   │ spawn + --patch come.patch.yml
+┌──────────────────▼───────────────────────────┐
+│  DSH 引擎（Agent 宿主，系统 dsh）              │
+│  对话流（Agent + 工具面板） + Web GUI          │
+└──────┬──────────────────────┬────────────────┘
+       │ HLP 协议层            │ iframe 托管
+┌──────▼──────────────────────▼────────────────┐
+│  HLP 协议层（@hlp/dsh-light-cockpit）         │
+│  协议方法 / App 注册表 / 代理桥 / 信任治理     │
+└──────┬──────────────────────┬────────────────┘
+       │ MCP stdio            │ Mail Bus（HLP over Email）
+┌──────▼──────────┐   ┌──────▼────────────────┐
+│ 业务 MCP Server │   │ 真实邮箱协作            │
+│ （驾驶舱/邮箱…） │   │ 群组·待办·询价·自进化    │
+└─────────────────┘   └───────────────────────┘
+        LocalApp 应用层（7 个内置 + 动态/持久化 App）
+```
+
+## 与 WorkBuddy 的差异
+
+WorkBuddy 是中心化的 AI 工作台产品。dsh-come 的差异化定位：**开源（MIT）**、**本地优先**（数据全部在本机，业务 Server 是本地 MCP 进程）、**协议驱动**（HLP 开放协议，第三方可按规范接入应用与传输绑定）、**去中心化协作**（应用数据经真实邮箱在对端之间直接流转，无中心服务器）。两者面向的场景不同，可并存使用。
 
 ## 它做什么
 

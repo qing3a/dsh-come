@@ -1,6 +1,9 @@
-# dsh-come｜DSH Companion
+# dsh-come｜Open-source DSH Desktop Distribution
 
 Turns [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) into a **tray-resident Windows desktop shell**: system tray icon + process supervision (crash self-healing / backoff restarts) + one-click open/restart — no more typing `dsh web` by hand.
+
+> **v0.3+: This distribution ships with the HLP protocol layer and a LocalApp ecosystem** ([Harness-LocalApp](https://github.com/qing3a/harness-localapp)) — 7 ready-to-use business apps (data cockpit, email collaboration, CRM, schedule, kanban, website quote widget, product catalog) plus `@mention` collaboration over real email. See the [Chinese README](README.md) for details.
+
 
 > **Who it is for**: people who already have `dsh` (or Node.js) installed and want a resident tray entry that starts on double-click and pulls the engine back up when it dies. When pieces are missing, the admin page / wizard installs them properly (node via winget, dsh via `npm install -g` — no npx temp pull). Developers can also just use the official `npx @deepseek-ai/dsh web`; this project wraps the engine guarding and the desktop experience.
 
