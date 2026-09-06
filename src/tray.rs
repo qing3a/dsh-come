@@ -233,7 +233,7 @@ impl App {
     /// 只换图标、不重建菜单（菜单内容不变，重建会重置复选框/菜单 id，属冗余）。
     fn refresh(&mut self) {
         // 主线程心跳：每轮刷新标记活动（心跳线程据此检测主循环是否卡死）
-        MAIN_ACTIVITY.store(unix_secs(), Ordering::Relaxed);
+        MAIN_ACTIVITY.store(runtime::unix_secs(), Ordering::Relaxed);
 
         // 主题切换检测：读注册表，变化时只调 set_icon 换图标
         let is_light = is_light_theme();
@@ -348,13 +348,6 @@ pub fn run_tray() -> Result<(), String> {
     Ok(())
 }
 
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// 当前 Explorer（任务栏宿主）PID：查 Shell_TrayWnd 顶层窗口的属主进程。
 /// None = 任务栏窗口不存在（Explorer 崩溃/注销中/无桌面会话）。
 #[cfg(target_os = "windows")]
@@ -413,7 +406,7 @@ fn spawn_main_heartbeat(proxy: EventLoopProxy<UserEvent>) {
         let mut warned = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(10));
-            let now = unix_secs();
+            let now = runtime::unix_secs();
             let last = MAIN_ACTIVITY.load(Ordering::Relaxed);
             if last != 0 && now.saturating_sub(last) > 30 {
                 if !warned {
@@ -822,32 +815,30 @@ fn spawn_theme_watcher(proxy: EventLoopProxy<UserEvent>) {
 #[cfg(not(target_os = "windows"))]
 fn spawn_theme_watcher(_proxy: EventLoopProxy<UserEvent>) {}
 
-pub fn open_browser(url: &str) {
+/// 用系统默认程序打开 URL 或本地路径（浏览器/目录/文件统一入口）。
+/// 此前 open_browser / open_dir / main::open_config_editor 三处各写一遍平台分支。
+pub fn open_path(target: &str) {
     #[cfg(target_os = "windows")]
     {
         let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", url]);
+        cmd.args(["/C", "start", "", target]);
         crate::supervisor::hide_window(&mut cmd); // 防弹 cmd 黑框
         let _ = cmd.spawn();
     }
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    let _ = std::process::Command::new("open").arg(target).spawn();
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    let _ = std::process::Command::new("xdg-open").arg(target).spawn();
 }
 
+/// 打开 URL（dsh 界面 / 管理页）。薄封装保留语义化调用点。
+pub fn open_browser(url: &str) {
+    open_path(url);
+}
+
+/// 打开本地目录（日志目录等）。
 pub fn open_dir(dir: &std::path::Path) {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", &dir.display().to_string()]);
-        crate::supervisor::hide_window(&mut cmd); // 防弹 cmd 黑框
-        let _ = cmd.spawn();
-    }
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(dir).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    open_path(&dir.to_string_lossy());
 }
 
 #[cfg(test)]

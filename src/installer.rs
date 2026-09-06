@@ -152,24 +152,52 @@ pub fn env_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// 极简 TTL 缓存：单槽，命中且未过期返回克隆，否则回源计算并回填。
+/// 此前 probe / npm_prefix / npm_view 三份手写同款骨架；统一后失效逻辑只需调
+/// `invalidate()`（旧版 invalidate_cache 漏清 NPM_VIEW_CACHE——npm 装完 60s 内
+/// 版本查询还是旧值）。
+struct TtlCache<V: Clone> {
+    slot: OnceLock<Mutex<Option<(std::time::Instant, V)>>>,
+    ttl: Duration,
+}
+
+impl<V: Clone> TtlCache<V> {
+    const fn new(ttl: Duration) -> Self {
+        Self {
+            slot: OnceLock::new(),
+            ttl,
+        }
+    }
+
+    fn get_or_compute(&self, compute: impl FnOnce() -> V) -> V {
+        let slot = self.slot.get_or_init(|| Mutex::new(None));
+        if let Ok(mut g) = slot.lock() {
+            if let Some((at, v)) = g.as_ref() {
+                if at.elapsed() < self.ttl {
+                    return v.clone();
+                }
+            }
+            let v = compute();
+            *g = Some((std::time::Instant::now(), v.clone()));
+            return v;
+        }
+        compute() // 锁中毒：退化为直接计算
+    }
+
+    fn invalidate(&self) {
+        if let Ok(mut g) = self.slot.get_or_init(|| Mutex::new(None)).lock() {
+            *g = None;
+        }
+    }
+}
+
+static PROBE_CACHE: TtlCache<serde_json::Value> = TtlCache::new(Duration::from_secs(5));
+static NPMPFX_CACHE: TtlCache<Option<PathBuf>> = TtlCache::new(Duration::from_secs(30));
+
 /// `npm prefix -g` 输出目录（npm 存在时）。**只用基础 PATH 找 npm**（避免递归）；
 /// 结果缓存 30s（npm 全局目录在 dsh 安装前后不变；node 安装后经 invalidate_cache 失效）。
 pub fn npm_prefix() -> Option<PathBuf> {
-    const TTL: Duration = Duration::from_secs(30);
-    let slot = NPMPFX_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(mut g) = slot.lock() {
-        if let Some((at, p)) = g.as_ref() {
-            if at.elapsed() < TTL {
-                return Some(p.clone());
-            }
-        }
-        let p = compute_npm_prefix();
-        if let Some(pp) = &p {
-            *g = Some((std::time::Instant::now(), pp.clone()));
-        }
-        return p;
-    }
-    None
+    NPMPFX_CACHE.get_or_compute(compute_npm_prefix)
 }
 
 fn compute_npm_prefix() -> Option<PathBuf> {
@@ -189,19 +217,8 @@ fn compute_npm_prefix() -> Option<PathBuf> {
         c
     };
     crate::supervisor::hide_window(&mut cmd);
-    let out = crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(3))?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
-    }
+    crate::supervisor::capture_trimmed(&mut cmd, Duration::from_secs(3)).map(PathBuf::from)
 }
-
-static NPMPFX_CACHE: OnceLock<Mutex<Option<(std::time::Instant, PathBuf)>>> = OnceLock::new();
 
 fn find_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -245,16 +262,7 @@ fn version_of(cmd: &str) -> Option<String> {
     let mut c = std::process::Command::new(&exe);
     c.arg("--version");
     crate::supervisor::hide_window(&mut c);
-    let out = crate::supervisor::capture_timeout(&mut c, Duration::from_secs(3))?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    crate::supervisor::capture_trimmed(&mut c, Duration::from_secs(3))
 }
 
 /// 存在性探测：纯文件查找（不 spawn 进程，快）。版本展示单独跑 version_of（只对 node/dsh）。
@@ -271,27 +279,15 @@ pub fn dsh_installed() -> bool {
 /// 综合探测快照（管理页展示）。带 5s TTL 缓存——探测要 spawn npm/node 等进程，
 /// 管理页每 2s 轮询时不能每次都跑；安装完成后 invalidate_cache 失效。
 pub fn probe() -> serde_json::Value {
-    const TTL: Duration = Duration::from_secs(5);
-    let cache = PROBE_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(mut g) = cache.lock() {
-        if let Some((at, v)) = g.as_ref() {
-            if at.elapsed() < TTL {
-                return v.clone();
-            }
-        }
-        let v = probe_uncached();
-        *g = Some((std::time::Instant::now(), v.clone()));
-        return v;
-    }
-    probe_uncached()
+    PROBE_CACHE.get_or_compute(probe_uncached)
 }
 
 /// 安装完成后使探测/路径缓存失效（node/dsh 刚装好/更新，需重探测）。
+/// 注意必须连带 NPM_VIEW_CACHE：否则 npm 装完 60s 内版本查询仍是旧值（旧版漏清的实际 bug）。
 pub fn invalidate_cache() {
-    if let Ok(mut g) = PROBE_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        *g = None;
-    }
-    if let Ok(mut g) = NPMPFX_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+    PROBE_CACHE.invalidate();
+    NPMPFX_CACHE.invalidate();
+    if let Ok(mut g) = NPM_VIEW_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *g = None;
     }
 }
@@ -305,9 +301,6 @@ fn probe_uncached() -> serde_json::Value {
         "winget": if which("winget").is_some() { Some("已安装".to_string()) } else { None },
     })
 }
-
-static PROBE_CACHE: OnceLock<Mutex<Option<(std::time::Instant, serde_json::Value)>>> =
-    OnceLock::new();
 
 // ---------- 异步安装 ----------
 

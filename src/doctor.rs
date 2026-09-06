@@ -48,16 +48,6 @@ impl Mode {
         }
     }
 
-    /// 失败时逐级升级（兜底）：巡检→处置→主治→急救→急救
-    pub fn escalate(self) -> Mode {
-        match self {
-            Mode::Inspect => Mode::Treat,
-            Mode::Treat => Mode::Attend,
-            Mode::Attend => Mode::Emergency,
-            Mode::Emergency => Mode::Emergency,
-        }
-    }
-
     /// 第 n 次崩溃（1-based）对应的升级模式：1→处置，2→主治，≥3→急救
     pub fn for_restart(n: u32) -> Mode {
         match n {
@@ -152,7 +142,7 @@ pub struct Finding {
 /// 由 `run_first_boot`（首次启动，默认处置）与 `supervisor` 监测线程（按崩溃次数升级）调用。
 pub fn heal(cfg: &AppConfig, mode: Mode) {
     let findings = scan_all(cfg);
-    let report = build_report(cfg, mode, &findings);
+    let report = build_report(mode, &findings);
     crate::supervisor::log(&report);
 
     if mode == Mode::Inspect {
@@ -171,7 +161,7 @@ pub fn heal(cfg: &AppConfig, mode: Mode) {
 /// 命令行 `dsh-come doctor [--mode X]`：打印报告；非巡检模式实际落地。
 pub fn run_cli(cfg: &AppConfig, mode: Mode) {
     let findings = scan_all(cfg);
-    let report = build_report(cfg, mode, &findings);
+    let report = build_report(mode, &findings);
     println!("{report}");
     crate::supervisor::log(&report);
 
@@ -595,7 +585,7 @@ fn apply_remedy(r: &Remedy) -> Result<String, String> {
 
 // ===================== 报告文本 =====================
 
-fn build_report(cfg: &AppConfig, mode: Mode, findings: &[Finding]) -> String {
+fn build_report(mode: Mode, findings: &[Finding]) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "【DSH 伴侣·诊疗报告】模式={}（{}）",
@@ -625,7 +615,6 @@ fn build_report(cfg: &AppConfig, mode: Mode, findings: &[Finding]) -> String {
             s.push_str("\n   处置：需用户手动解决（诊疗无法代劳）");
         }
     }
-    let _ = cfg;
     s
 }
 
@@ -706,38 +695,12 @@ fn backup(p: &Path) -> Result<(), String> {
 }
 
 fn kill_pid(pid: u32) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("taskkill");
-        cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
-        crate::supervisor::hide_window(&mut cmd);
-        let status = cmd.status().map_err(|e| e.to_string())?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("taskkill PID {pid} 返回非零（可能已退出或无权限）"))
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // SAFETY: kill 信号调用；pid>0 单进程（孤儿清理，非进程组——组杀在 supervisor::kill_tree）
-        let r = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-        if r == 0 {
-            // 等 2s 优雅退出，未果 SIGKILL
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            // SAFETY: 0 号信号探测存活；进程不存在返回 -1
-            let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
-            if alive {
-                // SAFETY: 同上
-                let k = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-                if k != 0 {
-                    return Err(format!("kill -9 PID {pid} 失败（可能已退出或无权限）"));
-                }
-            }
-            Ok(())
-        } else {
-            Err(format!("kill PID {pid} 失败（可能已退出或无权限）"))
-        }
+    // 平台分支收敛到 supervisor::kill_tree（Windows taskkill /T；Unix 组长判定+后代清理，
+    // 此前 doctor 有一份逐字重复的实现）；退出状态转 Result 供处置结果如实上报
+    if crate::supervisor::kill_tree(pid) {
+        Ok(())
+    } else {
+        Err(format!("结束 PID {pid} 失败（可能已退出或无权限）"))
     }
 }
 
@@ -1139,14 +1102,6 @@ fn collect_junk(root: &Path, max: usize) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mode_escalation_ladder() {
-        assert_eq!(Mode::Inspect.escalate(), Mode::Treat);
-        assert_eq!(Mode::Treat.escalate(), Mode::Attend);
-        assert_eq!(Mode::Attend.escalate(), Mode::Emergency);
-        assert_eq!(Mode::Emergency.escalate(), Mode::Emergency);
-    }
 
     #[test]
     fn mode_from_str_variants() {

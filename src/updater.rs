@@ -137,13 +137,6 @@ pub fn available() -> Option<UpdateInfo> {
 
 // ---------- 检查（节流） ----------
 
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn update_state_path() -> PathBuf {
     crate::runtime::root_dir().join("update-state.json")
 }
@@ -157,7 +150,9 @@ fn last_check_ts() -> u64 {
 }
 
 fn touch_check() {
-    if let Ok(s) = serde_json::to_string(&serde_json::json!({ "last_check": now_ts() })) {
+    if let Ok(s) =
+        serde_json::to_string(&serde_json::json!({ "last_check": crate::runtime::unix_secs() }))
+    {
         let _ = std::fs::write(update_state_path(), s);
     }
 }
@@ -250,7 +245,7 @@ fn fetch_next_update_info() -> Result<UpdateInfo, String> {
 pub fn check(force: bool) -> Result<Option<UpdateInfo>, String> {
     if !force {
         let last = last_check_ts();
-        if last != 0 && now_ts().saturating_sub(last) < 24 * 3600 {
+        if last != 0 && crate::runtime::unix_secs().saturating_sub(last) < 24 * 3600 {
             return Ok(available()); // 今日已查过：返回上次结果（可能 None）
         }
     }
@@ -271,7 +266,8 @@ pub fn check(force: bool) -> Result<Option<UpdateInfo>, String> {
 
 // ---------- 下载 + 校验 ----------
 
-fn hex_lower(bytes: &[u8]) -> String {
+/// 字节 → 小写十六进制。`pub`：status.rs 的 csrf_token 复用（此前 status 内联一份 map-format）。
+pub fn hex_lower(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));

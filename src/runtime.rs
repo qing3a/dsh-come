@@ -197,6 +197,14 @@ pub fn system_home_dir() -> PathBuf {
 
 // ---------- Node 版本兼容 ----------
 
+/// 当前 Unix 时间戳（秒）。全壳统一时间源（此前 supervisor/tray/updater 各写一份）。
+pub fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// dsh 0.1.1-rc.2+ 依赖的 Node API（Promise.withResolvers / stripTypeScriptTypes /
 /// createZstdDecompress）需要 Node 22+。部分环境（IDE 沙箱 / 豆包工作环境等）会把
 /// 旧版 node 注入到 PATH 最前面，导致 dsh 用低版本 node 启动而崩溃。这里探测 PATH
@@ -206,12 +214,8 @@ pub fn system_home_dir() -> PathBuf {
 fn node_major_version(node_exe: &std::path::Path) -> Option<u32> {
     let mut cmd = std::process::Command::new(node_exe);
     cmd.arg("--version");
-    let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(3))?;
-    if !out.status.success() {
-        return None;
-    }
-    let v = String::from_utf8_lossy(&out.stdout);
-    let ver = v.trim().strip_prefix('v')?;
+    let v = crate::supervisor::capture_trimmed(&mut cmd, std::time::Duration::from_secs(3))?;
+    let ver = v.strip_prefix('v')?;
     ver.split('.').next()?.parse::<u32>().ok()
 }
 
@@ -301,16 +305,7 @@ pub fn dsh_version() -> Option<String> {
     let runner = dsh_runner()?;
     let args: Vec<String> = vec!["--version".to_string()];
     let mut cmd = dsh_command(&runner, &args);
-    let out = crate::supervisor::capture_timeout(&mut cmd, std::time::Duration::from_secs(3))?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    crate::supervisor::capture_trimmed(&mut cmd, std::time::Duration::from_secs(3))
 }
 
 /// 引擎实际运行的 dsh 版本（状态行展示）。cfg 保留签名兼容，实际不依赖配置。
@@ -427,6 +422,17 @@ mod tests {
             r#"{"name":"@hlp/dsh-light-cockpit","version":"0.0.2"}"#,
         )
         .unwrap();
+        // 健康检查要求的完整骨架：入口/注册表目录/两个业务 Server 的 manifest
+        std::fs::write(src.join("index.js"), "module.exports = {};").unwrap();
+        std::fs::create_dir_all(src.join("lib")).unwrap();
+        for biz in ["biz-cockpit-mcp", "mail-collab-server"] {
+            std::fs::create_dir_all(src.join("business").join(biz)).unwrap();
+            std::fs::write(
+                src.join("business").join(biz).join("package.json"),
+                r#"{"name":"biz","version":"0.0.1"}"#,
+            )
+            .unwrap();
+        }
         assert!(ensure_hlp_plugin().unwrap(), "应从源部署");
         let dst = dsh_home
             .join("profiles")
@@ -518,7 +524,7 @@ pub fn hlp_plugin_dir() -> PathBuf {
         .join("dsh-light-cockpit")
 }
 
-/// 递归复制目录（ensure_hlp_plugin 用；插件树无符号链接，不做链接特殊处理）
+/// 递归复制目录（hlp_plugin 部署用；插件树无符号链接，不做链接特殊处理）
 pub(crate) fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
     let mut copied = 0u64;
     std::fs::create_dir_all(dst)?;
@@ -536,53 +542,23 @@ pub(crate) fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std:
     Ok(copied)
 }
 
-fn parse_json_file(p: &std::path::Path) -> bool {
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .is_some()
-}
-
-/// 确保发行版附带的 HLP 插件已部署到 root\plugins\dsh-light-cockpit。
-/// 源候选（按序）：① exe 同目录 hlp-plugin\dsh-light-cockpit（发行版布局）
-/// ② exe 同目录 hlp-plugin（解压形态，目录内容即插件根）。
-/// 已部署（package.json 可解析）→ 跳过（幂等）；无任何可用源 → Ok(false)
-/// （patch 条目加载不到仅 warn 一条，与 dsh-market 未装同语义，不阻塞启动）。
+/// 确保发行版附带的 HLP 插件已部署到 DSH 共享层（~/.dsh/profiles/node_modules/@hlp）。
+/// 幂等判定用 hlp_plugin::healthy（比旧版「package.json 可解析」更强：损坏态自动重装）。
+/// 部署实现单一来源 = hlp_plugin::deploy_from_source（此前 runtime 里有一份逐字相同的
+/// 候选列表+复制循环，改一处漏一处）。无可用源/复制失败 → Ok(false) 留痕不阻塞启动
+/// （patch 条目加载不到仅影响 LocalApp，与 dsh-market 未装同语义）。
 /// 返回 Ok(true) 表示本次执行了部署。
 pub fn ensure_hlp_plugin() -> std::io::Result<bool> {
-    let dst = hlp_plugin_dir();
-    let manifest = dst.join("package.json");
-    if manifest.is_file() && parse_json_file(&manifest) {
-        return Ok(false); // 幂等：已部署且 manifest 可解析
+    if crate::hlp_plugin::healthy() {
+        return Ok(false); // 幂等：已部署且结构完整
     }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let candidates: Vec<PathBuf> = match &exe_dir {
-        Some(d) => vec![
-            d.join("hlp-plugin").join("dsh-light-cockpit"),
-            d.join("hlp-plugin"),
-        ],
-        None => vec![],
-    };
-    for src in candidates {
-        let marker = src.join("package.json");
-        if !marker.is_file() || !parse_json_file(&marker) {
-            continue;
-        }
-        if let Some(dir) = dst.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        // 旧目录残留（损坏态）先清掉，避免半旧半新
-        if dst.exists() {
-            std::fs::remove_dir_all(&dst)?;
-        }
-        copy_dir_all(&src, &dst)?;
-        if manifest.is_file() && parse_json_file(&manifest) {
-            return Ok(true);
+    match crate::hlp_plugin::deploy_from_source() {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            crate::supervisor::log(&format!("HLP 插件自动部署跳过：{e}"));
+            Ok(false)
         }
     }
-    Ok(false)
 }
 
 /// come.patch.yml 的 HLP 段：**insert 结构**（新增插件语义；裸条目 = 对已有插件做

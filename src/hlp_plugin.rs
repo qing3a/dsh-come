@@ -50,7 +50,9 @@ fn source_candidates() -> Vec<PathBuf> {
 }
 
 /// 从安装源复制插件到共享层。返回复制的文件数。
-fn deploy_from_source() -> Result<u64, String> {
+/// `pub(crate)`：runtime::ensure_hlp_plugin（启动自愈）复用同一部署实现——
+/// 此前 runtime 里还有一份逐字相同的候选列表+复制循环，两处改一处漏一处。
+pub(crate) fn deploy_from_source() -> Result<u64, String> {
     for src in source_candidates() {
         if !src.join("package.json").is_file() {
             continue;

@@ -22,6 +22,72 @@ fn wait_install(timeout_secs: u64) -> bool {
     }
 }
 
+/// 自动安装的组件（node / dsh 共用一套引导骨架，仅文案不同）。
+#[derive(Clone, Copy)]
+enum Kind {
+    Node,
+    Dsh,
+}
+
+/// 自动安装引导（node/dsh 共用骨架，此前两块复制粘贴）：提示三件套（日志/托盘/通知）
+/// → 触发安装 → 等待 → 失败三件套。返回 false = 安装失败，调用方应终止引导；
+/// 返回 true = 安装完成，或触发失败（按原逻辑放行，让下一步自检继续判断）。
+fn ensure_installed(kind: Kind) -> bool {
+    let (installer_kind, start_log, start_flash, start_toast, fail_log, fail_flash, fail_toast) =
+        match kind {
+            Kind::Node => (
+                "node",
+                "未检测到 Node.js/npm，自动安装 Node.js（winget，可能弹出权限确认）…",
+                crate::i18n::tr("正在安装 Node.js…", "Installing Node.js…"),
+                crate::i18n::tr(
+                    "未检测到 Node.js，正在自动安装（可能弹出权限确认）…",
+                    "Node.js not found; installing automatically (a permission prompt may appear)…",
+                ),
+                "Node.js 安装超时或失败，请到管理页重试",
+                crate::i18n::tr(
+                    "Node.js 安装失败：请在管理页重试",
+                    "Node.js install failed: retry from the admin page",
+                ),
+                crate::i18n::tr(
+                    "Node.js 安装失败，请打开管理页查看原因重试。",
+                    "Node.js install failed; open the admin page to retry.",
+                ),
+            ),
+            Kind::Dsh => (
+                "dsh",
+                "未检测到 dsh，自动安装（npm install -g @deepseek-ai/dsh）…",
+                crate::i18n::tr("正在安装 dsh…", "Installing dsh…"),
+                crate::i18n::tr(
+                    "未检测到 dsh，正在自动安装…",
+                    "dsh not found; installing automatically…",
+                ),
+                "dsh 安装超时或失败，请到管理页重试",
+                crate::i18n::tr(
+                    "dsh 安装失败：请在管理页重试",
+                    "dsh install failed: retry from the admin page",
+                ),
+                crate::i18n::tr(
+                    "dsh 安装失败，请打开管理页查看原因重试。",
+                    "dsh install failed; open the admin page to retry.",
+                ),
+            ),
+        };
+    supervisor::log(start_log);
+    supervisor::set_flash(start_flash);
+    crate::notify::toast(crate::i18n::tr("DSH 伴侣", "DSH Companion"), start_toast);
+    if let Err(e) = crate::installer::start_install(installer_kind) {
+        supervisor::log(&format!("自动安装触发失败: {e}"));
+        return true; // 触发失败不终止：原逻辑会继续走下一步自检
+    }
+    if !wait_install(480) {
+        supervisor::log(fail_log);
+        supervisor::set_flash(fail_flash);
+        crate::notify::toast(crate::i18n::tr("DSH 伴侣", "DSH Companion"), fail_toast);
+        return false;
+    }
+    true
+}
+
 /// 起引导线程：后台启动引擎，就绪后打开浏览器（只开一次）。
 /// 每次重试逐级升级自检模式（处置→主治→急救），把「先检测→推荐执行→兜底急救」落到重试里。
 /// 停止条件：运行器缺失（dsh 未安装，诊疗不可自愈）或尝试 3 次仍失败。
@@ -33,67 +99,11 @@ pub fn start(cfg: &AppConfig) {
             // 运行器缺失 → 自动走「正常安装」（2026-08-19 用户拍板，不做 npx 临时拉取）：
             // node 缺失 → winget 装 LTS；dsh 缺失 → npm install -g；装完 fall-through 重试启动。
             if crate::runtime::dsh_runner().is_none() {
-                let need_node = !crate::installer::npm_installed();
-                if need_node {
-                    supervisor::log(
-                        "未检测到 Node.js/npm，自动安装 Node.js（winget，可能弹出权限确认）…",
-                    );
-                    supervisor::set_flash(crate::i18n::tr(
-                        "正在安装 Node.js…",
-                        "Installing Node.js…",
-                    ));
-                    crate::notify::toast(
-                        crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                        crate::i18n::tr(
-                            "未检测到 Node.js，正在自动安装（可能弹出权限确认）…",
-                            "Node.js not found; installing automatically (a permission prompt may appear)…",
-                        ),
-                    );
-                    if let Err(e) = crate::installer::start_install("node") {
-                        supervisor::log(&format!("自动安装 Node.js 触发失败: {e}"));
-                    } else if !wait_install(480) {
-                        supervisor::log("Node.js 安装超时或失败，请到管理页重试");
-                        supervisor::set_flash(crate::i18n::tr(
-                            "Node.js 安装失败：请在管理页重试",
-                            "Node.js install failed: retry from the admin page",
-                        ));
-                        crate::notify::toast(
-                            crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                            crate::i18n::tr(
-                                "Node.js 安装失败，请打开管理页查看原因重试。",
-                                "Node.js install failed; open the admin page to retry.",
-                            ),
-                        );
-                        return;
-                    }
+                if !crate::installer::npm_installed() && !ensure_installed(Kind::Node) {
+                    return;
                 }
-                if !crate::installer::dsh_installed() {
-                    supervisor::log("未检测到 dsh，自动安装（npm install -g @deepseek-ai/dsh）…");
-                    supervisor::set_flash(crate::i18n::tr("正在安装 dsh…", "Installing dsh…"));
-                    crate::notify::toast(
-                        crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                        crate::i18n::tr(
-                            "未检测到 dsh，正在自动安装…",
-                            "dsh not found; installing automatically…",
-                        ),
-                    );
-                    if let Err(e) = crate::installer::start_install("dsh") {
-                        supervisor::log(&format!("自动安装 dsh 触发失败: {e}"));
-                    } else if !wait_install(480) {
-                        supervisor::log("dsh 安装超时或失败，请到管理页重试");
-                        supervisor::set_flash(crate::i18n::tr(
-                            "dsh 安装失败：请在管理页重试",
-                            "dsh install failed: retry from the admin page",
-                        ));
-                        crate::notify::toast(
-                            crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                            crate::i18n::tr(
-                                "dsh 安装失败，请打开管理页查看原因重试。",
-                                "dsh install failed; open the admin page to retry.",
-                            ),
-                        );
-                        return;
-                    }
+                if !crate::installer::dsh_installed() && !ensure_installed(Kind::Dsh) {
+                    return;
                 }
                 // v1.4.0 P0-2：HLP 插件（LocalApp 生态）缺失时自动安装（node → dsh → hlp 第三步）。
                 // 无发行版附带源时报错并提示管理页——不阻塞引擎启动（HLP 缺席只影响 LocalApp）。

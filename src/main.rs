@@ -123,17 +123,7 @@ fn open_config_editor() {
     let cfg = config::load();
     config::save(&cfg);
     let p = config::config_path();
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", &p.display().to_string()]);
-        supervisor::hide_window(&mut cmd);
-        let _ = cmd.spawn();
-    }
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&p).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&p).spawn();
+    crate::tray::open_path(&p.display().to_string());
 }
 
 fn main() {

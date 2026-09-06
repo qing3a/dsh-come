@@ -259,10 +259,9 @@ fn csrf_token() -> &'static str {
             )
             .as_bytes(),
         );
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        crate::updater::hex_lower(&h.finalize())
     })
 }
-
 fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static str, String) {
     match (method, path) {
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", admin_html()),
@@ -285,19 +284,11 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         ),
         ("POST", "/api/dsh/update") => match crate::installer::dsh_latest() {
             Some(v) => match crate::installer::start_dsh_install(&v) {
-                Ok(()) => ok_json(&format!(
-                    "{} {v}（{}）",
-                    crate::i18n::tr("已触发更新到", "Update to"),
-                    crate::i18n::tr(
-                        "异步进行，稍后刷新查看结果",
-                        "running asynchronously; refresh to see the result"
-                    )
+                Ok(()) => triggered_json(&format!(
+                    "{} {v}",
+                    crate::i18n::tr("已触发更新到", "Update to")
                 )),
-                Err(e) => (
-                    "409 Conflict",
-                    "application/json; charset=utf-8",
-                    err_json(&e),
-                ),
+                Err(e) => conflict(&e),
             },
             None => (
                 "502 Bad Gateway",
@@ -318,19 +309,11 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 )
             } else {
                 match crate::installer::start_dsh_install(ver) {
-                    Ok(()) => ok_json(&format!(
-                        "{} dsh@{ver}（{}）",
-                        crate::i18n::tr("已触发安装", "Install triggered for"),
-                        crate::i18n::tr(
-                            "异步进行，稍后刷新查看结果",
-                            "running asynchronously; refresh to see the result"
-                        )
+                    Ok(()) => triggered_json(&format!(
+                        "{} dsh@{ver}",
+                        crate::i18n::tr("已触发安装", "Install triggered for")
                     )),
-                    Err(e) => (
-                        "409 Conflict",
-                        "application/json; charset=utf-8",
-                        err_json(&e),
-                    ),
+                    Err(e) => conflict(&e),
                 }
             }
         }
@@ -350,11 +333,7 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 "已触发 HLP 插件安装（异步进行，稍后刷新查看结果）",
                 "HLP plugin install triggered (async; refresh to see the result)",
             )),
-            Err(e) => (
-                "409 Conflict",
-                "application/json; charset=utf-8",
-                err_json(&e),
-            ),
+            Err(e) => conflict(&e),
         },
         ("POST", "/api/hlp/repair") => {
             match crate::installer::spawn_task("hlp-repair", || match crate::hlp_plugin::repair() {
@@ -365,11 +344,7 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                     "已触发 HLP 插件修复（备份旧目录后重装，异步进行）",
                     "HLP plugin repair triggered (backup + reinstall, async)",
                 )),
-                Err(e) => (
-                    "409 Conflict",
-                    "application/json; charset=utf-8",
-                    err_json(&e),
-                ),
+                Err(e) => conflict(&e),
             }
         }
         ("GET", "/api/hlp/apps") => (
@@ -514,19 +489,11 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
 
 fn install_json(kind: &str) -> (&'static str, &'static str, String) {
     match crate::installer::start_install(kind) {
-        Ok(()) => ok_json(&format!(
-            "{} {kind}（{}）",
-            crate::i18n::tr("已触发安装", "Install triggered for"),
-            crate::i18n::tr(
-                "异步进行，稍后刷新查看结果",
-                "running asynchronously; refresh to see the result"
-            )
+        Ok(()) => triggered_json(&format!(
+            "{} {kind}",
+            crate::i18n::tr("已触发安装", "Install triggered for")
         )),
-        Err(e) => (
-            "409 Conflict",
-            "application/json; charset=utf-8",
-            err_json(&e),
-        ),
+        Err(e) => conflict(&e),
     }
 }
 
@@ -561,91 +528,104 @@ fn parse_bundles(profile_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 收集一条 `- id:` / `name:` patch 条目（id/name 至少其一才记录）
-fn push_patch_item(
-    items: &mut Vec<serde_json::Value>,
-    id: &mut Option<String>,
-    name: &mut Option<String>,
-) {
-    if id.is_some() || name.is_some() {
-        let n = name.take().unwrap_or_default();
-        items.push(serde_json::json!({
-            "id": id.take().unwrap_or_default(),
-            "source": n,
-            "local": n.starts_with("file:"),
-        }));
-    }
-}
-
-/// 本地 patch 插件：解析 profile/cordis.patch.yml 的 `- id:` / `name:` 条目
-/// （cordis.patch.yml 是 dsh profile 的 patch overlay；`name: 'file://…'` = 本地源码硬加载）
+/// 本地 patch 插件：解析 profile/cordis.patch.yml 的顶层条目。
+/// 统一走 `patchyml::parse_entries`——此前这里的手写逐行扫描会把**嵌套** `- id:` 误当
+/// 顶层条目、漏掉 `- name:` 在前 `id:` 换行的写法，与 doctor 对同一文件给出矛盾结论
+/// （doctor 早已迁移，本函数是最后一个旧实现）。
 fn parse_patches(profile_dir: &Path) -> Vec<serde_json::Value> {
     let Ok(content) = std::fs::read_to_string(profile_dir.join("cordis.patch.yml")) else {
         return Vec::new();
     };
-    let mut items: Vec<serde_json::Value> = Vec::new();
-    let mut cur_id: Option<String> = None;
-    let mut cur_name: Option<String> = None;
-    for raw in content.lines() {
-        let line = raw.trim();
-        if let Some(rest) = line.strip_prefix("- id:") {
-            push_patch_item(&mut items, &mut cur_id, &mut cur_name);
-            cur_id = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("name:") {
-            cur_name = Some(rest.trim().trim_matches('\'').trim_matches('"').to_string());
-        }
-    }
-    push_patch_item(&mut items, &mut cur_id, &mut cur_name);
-    items
+    crate::patchyml::parse_entries(&content)
+        .into_iter()
+        .map(|e| {
+            let n = e.name.unwrap_or_default();
+            serde_json::json!({
+                "id": e.id.unwrap_or_default(),
+                "source": n,
+                "local": n.starts_with("file:"),
+            })
+        })
+        .collect()
 }
 
 /// 内置已验证插件清单（dsh-plugin-guide §发布期：「进壳的插件市场（内置 ✓已验证 清单）一键装/卸」）。
-/// 相对仓库 plugins/ 定位——开发/本机使用 exe 同级或上一级目录的 plugins/<id>。
-/// 返回 {id, name, src(绝对路径或 None), hint}。
+/// **从磁盘派生**：扫描 plugins/ 根下每个含 package.json 的子目录，id = 目录名，
+/// desc = package.json 的 description 字段——壳不再硬编码清单，加插件只需把目录
+/// 放进 plugins/（此前四行硬编码，加插件要改壳代码）。返回 {id, name, desc, src}。
 fn builtin_marketplace() -> Vec<serde_json::Value> {
-    const BUILTIN: &[(&str, &str)] = &[
-        ("recruit-tools", "猎头工具集（候选人/职位/推荐流水线）"),
-        ("recruit-workbench", "猎头工作台（host+client 双半）"),
-        ("mcp-apps-host", "MCP 应用宿主"),
-        ("workbench", "通用工作台"),
-    ];
     let mut out = Vec::new();
-    for (id, desc) in BUILTIN {
-        let src = resolve_plugin_dir(id);
-        out.push(serde_json::json!({
-            "id": id,
-            "name": id,
-            "desc": desc,
-            "src": src.map(|p| p.display().to_string()),
-        }));
+    for root in plugin_root_candidates() {
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.join("package.json").is_file())
+            .collect();
+        if dirs.is_empty() {
+            continue; // 这个锚点没有插件（目录不存在/为空）→ 试下一个锚点
+        }
+        dirs.sort(); // 按目录名稳定排序（原硬编码清单也是字母序）
+        for dir in dirs {
+            let id = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let desc = plugin_description(&dir).unwrap_or_else(|| id.clone());
+            out.push(serde_json::json!({
+                "id": id,
+                "name": id,
+                "desc": desc,
+                "src": dir.display().to_string(),
+            }));
+        }
+        break; // 首个有插件锚点生效（与 resolve_plugin_dir 的候选序语义一致）
     }
     out
 }
 
-/// 定位内置插件目录。插件随分发形态走，位置不固定，故从多个锚点候选：
-///   1. 壳数据目录 `root_dir()/plugins/<id>`（安装器/自更新可能把插件放这儿）；
-///   2. exe 所在目录**向上逐层**找 `plugins/<id>`（最多 4 层）：
+/// 读插件目录 package.json 的 description（缺省/为空 → None，调用方回落目录名）。
+fn plugin_description(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("description")?
+        .as_str()
+        .map(String::from)
+        .filter(|s| !s.is_empty())
+}
+
+/// plugins/ 根目录候选锚点（resolve_plugin_dir 与 builtin_marketplace 共用）：
+///   1. 壳数据目录 `root_dir()/plugins`（安装器/自更新可能把插件放这儿）；
+///   2. exe 所在目录**向上逐层**找 `plugins/`（最多 4 层）：
 ///      - 生产：安装目录下 `dsh-come.exe` 旁就是 `plugins/`；
 ///      - 开发：`target/release/dsh-come.exe` 向上两层即仓库根 `plugins/`；
 ///   3. 当前工作目录（cargo run 时 cwd = 仓库根）。
-/// 找不到返回 None → 前端把该项置灰（比给个点了必然失败的路径诚实）。
-fn resolve_plugin_dir(id: &str) -> Option<PathBuf> {
+fn plugin_root_candidates() -> Vec<PathBuf> {
     const UP_LEVELS: usize = 4;
     let mut cands: Vec<PathBuf> = Vec::new();
-    cands.push(crate::runtime::root_dir().join("plugins").join(id));
+    cands.push(crate::runtime::root_dir().join("plugins"));
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(|p| p.to_path_buf());
         for _ in 0..UP_LEVELS {
             let Some(d) = dir else { break };
-            cands.push(d.join("plugins").join(id));
+            cands.push(d.join("plugins"));
             dir = d.parent().map(|p| p.to_path_buf());
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        cands.push(cwd.join("plugins").join(id));
+        cands.push(cwd.join("plugins"));
     }
     cands
+}
+
+/// 定位内置插件目录：在候选锚点下找 `<root>/<id>`。
+/// 找不到返回 None → 前端把该项置灰（比给个点了必然失败的路径诚实）。
+fn resolve_plugin_dir(id: &str) -> Option<PathBuf> {
+    plugin_root_candidates()
         .into_iter()
+        .map(|r| r.join(id))
         .find(|p| p.join("cordis.yml").is_file() || p.join("package.json").is_file())
 }
 
@@ -687,34 +667,15 @@ fn install_plugin(src: Option<&str>, id: Option<&str>) -> Result<(), String> {
     if !Path::new(&src).is_dir() {
         return Err(format!("插件目录不存在: {src}"));
     }
-    let Some(runner) = crate::runtime::dsh_runner() else {
-        return Err("未找到系统 dsh 命令（请先安装 dsh）".to_string());
-    };
-    let args: Vec<String> = vec![
-        "plugin".into(),
-        "--profile".into(),
-        "web".into(),
-        "add".into(),
-        src.clone(),
-    ];
-    let mut cmd = crate::runtime::dsh_command(&runner, &args);
-    crate::supervisor::hide_window(&mut cmd);
     // 后台线程执行，结果写入安装状态（管理页轮询 /api/install/status）
     crate::installer::spawn_task("plugin", move || {
         // 带超时：pnpm 首次解析可能慢，给 5 分钟
-        match crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(300)) {
-            Some(out) => {
-                let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
-                if out.status.success() {
-                    (true, format!("插件安装成功（{src}）。{tail}"))
-                } else {
-                    (
-                        false,
-                        format!("插件安装失败（退出码 {:?}）。{tail}", out.status.code()),
-                    )
-                }
-            }
-            None => (false, format!("插件安装超时（5 分钟）。{src}")),
+        match run_dsh_capture(
+            &["plugin", "--profile", "web", "add", src.as_str()],
+            Duration::from_secs(300),
+        ) {
+            Ok(tail) => (true, format!("插件安装成功（{src}）。{tail}")),
+            Err(e) => (false, format!("插件安装失败：{e}")),
         }
     })?;
     Ok(())
@@ -755,48 +716,20 @@ fn uninstall_patch(dir: &Path, target: &str) -> Result<String, String> {
     let path = dir.join("cordis.patch.yml");
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-    let lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<&str> = Vec::new();
-    let mut i = 0;
-    let mut removed = false;
-    while i < lines.len() {
-        let is_target = lines[i]
-            .trim()
-            .strip_prefix("- id:")
-            .map(|r| r.trim() == target)
-            .unwrap_or(false);
-        if is_target {
-            removed = true;
-            i += 1;
-            // 跳过该条目的子行（缩进/空/注释），直到下一个顶层项（无缩进的非注释非空行）
-            while i < lines.len() {
-                let l = lines[i];
-                if l.trim().is_empty() || l.trim_start().starts_with('#') {
-                    i += 1;
-                    continue;
-                }
-                if !l.starts_with(char::is_whitespace) {
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        out.push(lines[i]);
-        i += 1;
-    }
-    if !removed {
-        return Err(format!("cordis.patch.yml 中未找到条目: {target}"));
-    }
+    // 统一保序编辑（patchyml::remove_entry）：只动目标条目行区间，注释与其余条目原样保留；
+    // 旧手写循环只认 `- id:` 紧邻写法，`- name:` 在前 `id:` 换行的条目删不掉
+    let new_text = crate::patchyml::remove_entry(&content, target)
+        .ok_or_else(|| format!("cordis.patch.yml 中未找到条目: {target}"))?;
     // 备份原文件（可回滚）
     let bak = path.with_extension("patch.yml.bak");
     let _ = std::fs::copy(&path, &bak);
     // 已无有效条目 → 写注释空 patch（保持合法 YAML，dsh 读作空 overlay）
-    let has_entry = out.iter().any(|l| {
-        l.trim_start().starts_with("- insert:") || l.trim_start().starts_with("- replace:")
+    let has_entry = crate::patchyml::parse_entries(&new_text).iter().any(|e| {
+        let t = e.text.trim_start();
+        t.starts_with("- insert:") || t.starts_with("- replace:")
     });
     let new_content = if has_entry {
-        out.join("\n") + "\n"
+        new_text + "\n"
     } else {
         "# 已卸载全部 patch overlay（dsh-come 管理页，原内容见 cordis.patch.yml.bak）\n".to_string()
     };
@@ -808,52 +741,46 @@ fn uninstall_patch(dir: &Path, target: &str) -> Result<String, String> {
 
 /// 市场 bundle 卸载：`dsh plugin --profile web remove <pkg>`（转发 pnpm remove）。
 fn uninstall_bundle(id: &str) -> Result<String, String> {
+    // 带超时：dsh plugin 可能慢（pnpm remove 解析），防挂死请求线程
+    run_dsh_capture(
+        &["plugin", "--profile", "web", "remove", id],
+        Duration::from_secs(120),
+    )
+    .map(|tail| format!("已卸载 bundle「{id}」（重启引擎后生效）。{tail}"))
+    .map_err(|e| format!("卸载 {id} 失败：{e}"))
+}
+
+/// 同步运行 `dsh <args>`（隐藏窗口 + 超时强杀）：Ok = stdout 摘要（tail），
+/// Err = 运行器缺失/非零退出/超时。install_plugin 与 uninstall_bundle 的共用骨架
+/// （此前两份各写一遍，错误文案还不一致）。
+fn run_dsh_capture(args: &[&str], timeout: Duration) -> Result<String, String> {
     let Some(runner) = crate::runtime::dsh_runner() else {
         return Err("未找到系统 dsh 命令".to_string());
     };
-    let args: Vec<String> = vec![
-        "plugin".into(),
-        "--profile".into(),
-        "web".into(),
-        "remove".into(),
-        id.to_string(),
-    ];
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let mut cmd = crate::runtime::dsh_command(&runner, &args);
     crate::supervisor::hide_window(&mut cmd);
-    // 带超时：dsh plugin 可能慢（pnpm remove 解析），防挂死请求线程
-    match crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(120)) {
+    match crate::supervisor::capture_timeout(&mut cmd, timeout) {
         Some(out) => {
             let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
             if out.status.success() {
-                Ok(format!("已卸载 bundle「{id}」（重启引擎后生效）。{tail}"))
+                Ok(tail)
             } else {
-                Err(format!(
-                    "卸载 {id} 失败（退出码 {:?}）。{tail}",
-                    out.status.code()
-                ))
+                Err(format!("退出码 {:?}。{tail}", out.status.code()))
             }
         }
-        None => Err(format!("卸载 {id} 超时（120 秒）")),
+        None => Err(format!("超时（{} 秒）", timeout.as_secs())),
     }
 }
 
 /// 从请求 path 的 query 里解析布尔参数：`?keepData=0` / `?cleanShim=1`。
 /// 缺失或无法解析 → 用 default。
 fn query_flag(path: &str, key: &str, default: bool) -> bool {
-    let Some(qi) = path.find('?') else {
-        return default;
-    };
-    for pair in path[qi + 1..].split('&') {
-        let mut it = pair.splitn(2, '=');
-        if it.next() == Some(key) {
-            match it.next() {
-                Some("1" | "true" | "yes") => return true,
-                Some("0" | "false" | "no") => return false,
-                _ => return default,
-            }
-        }
+    match query_str(path, key).as_deref() {
+        Some("1" | "true" | "yes") => true,
+        Some("0" | "false" | "no") => false,
+        _ => default,
     }
-    default
 }
 
 /// 从请求 path 的 query 里取字符串参数（URL 解码）：`?src=<path>` / `?id=<id>`。
@@ -1046,13 +973,38 @@ mod tests {
     #[test]
     fn builtin_marketplace_items_are_complete() {
         let m = builtin_marketplace();
-        assert!(!m.is_empty(), "内置清单不应为空");
+        assert!(
+            !m.is_empty(),
+            "内置清单不应为空（cargo test 的 cwd=仓库根，plugins/ 有 4 个插件）"
+        );
         for item in m {
             assert!(item["id"].as_str().is_some(), "清单项缺 id: {item}");
             assert!(item["name"].as_str().is_some(), "清单项缺 name: {item}");
-            // src 可为空（本机没这个插件目录 → 前端会把该项置灰）
-            assert!(item.get("src").is_some(), "清单项缺 src 字段: {item}");
+            // 磁盘派生：目录来自实际扫描，src 恒为存在的路径
+            assert!(
+                item["desc"].as_str().is_some_and(|s| !s.is_empty()),
+                "清单项缺 desc: {item}"
+            );
+            assert!(item["src"].as_str().is_some(), "清单项缺 src: {item}");
         }
+    }
+
+    /// 插件清单从磁盘派生而非硬编码：目录名 → id，package.json.description → desc。
+    /// 这里锚定 workbench（md-studio）确认派生链路成立。
+    #[test]
+    fn builtin_marketplace_derives_from_plugins_dir() {
+        let m = builtin_marketplace();
+        let ids: Vec<&str> = m.iter().filter_map(|i| i["id"].as_str()).collect();
+        assert!(
+            ids.contains(&"workbench"),
+            "派生清单应含 workbench，实际 {ids:?}"
+        );
+        let wb = m.iter().find(|i| i["id"] == "workbench").unwrap();
+        assert!(
+            wb["desc"].as_str().unwrap().contains("工作台"),
+            "desc 应来自 package.json.description，实际 {}",
+            wb["desc"]
+        );
     }
 
     /// bind_any(0)：OS 分配随机端口，返回的端口应 >0。
@@ -1323,6 +1275,27 @@ fn ok_json(msg: &str) -> (&'static str, &'static str, String) {
         "200 OK",
         "application/json; charset=utf-8",
         serde_json::json!({ "ok": true, "msg": msg }).to_string(),
+    )
+}
+
+/// 「已触发 X」类响应的统一拼装：`{msg}（异步进行，稍后刷新查看结果）`。
+/// 此前 4 处路由各自重复同一 i18n 拼接；后缀不同的站点（如插件安装）不强行套用。
+fn triggered_json(msg: &str) -> (&'static str, &'static str, String) {
+    ok_json(&format!(
+        "{msg}（{}）",
+        crate::i18n::tr(
+            "异步进行，稍后刷新查看结果",
+            "running asynchronously; refresh to see the result"
+        )
+    ))
+}
+
+/// 409 统一形态（安装互斥/状态冲突时，任务已在跑不能重复触发）。
+fn conflict(e: &str) -> (&'static str, &'static str, String) {
+    (
+        "409 Conflict",
+        "application/json; charset=utf-8",
+        err_json(e),
     )
 }
 

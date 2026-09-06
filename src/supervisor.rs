@@ -151,13 +151,6 @@ pub fn fmt_elapsed(secs: u64) -> String {
     }
 }
 
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// 日志入口（供 tray / plugins 等其他模块写引擎滚动日志）
 pub fn log(line: &str) {
     append_log(line);
@@ -254,6 +247,21 @@ pub fn capture_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::proc
     }
 }
 
+/// 带超时捕获并取 trim 后 stdout：失败/超时/非零退出/空输出 → None。
+/// 「探测类命令只关心一行版本号/路径」场景的统一收尾（此前 installer/runtime 5 处各写一遍）。
+pub fn capture_trimmed(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let out = capture_timeout(cmd, timeout)?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 /// 让子进程落在独立进程组（Unix）：spawn 前调用，`kill -pgid` 可整树清理。
 /// Windows 无需此设置（Job Object / taskkill /T 负责进程树）。
 #[cfg(not(target_os = "windows"))]
@@ -289,7 +297,7 @@ fn append_log(line: &str) {
     {
         let _ = writeln!(f, "[{}] {line}", chrono::Local::now().format("%H:%M:%S"));
         // 记录最近写入时刻：心跳检测（heartbeat_if_silent）据此判断「日志静默」
-        LAST_LOG_AT.store(unix_secs(), Ordering::Relaxed);
+        LAST_LOG_AT.store(runtime::unix_secs(), Ordering::Relaxed);
     }
 }
 
@@ -329,26 +337,29 @@ pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
 pub fn ui_url() -> String {
     let cfg = crate::config::load();
     let bare = format!("http://127.0.0.1:{}", cfg.port);
-    let log = runtime::engine_log();
-    let Ok(text) = std::fs::read_to_string(&log) else {
+    let Ok(text) = std::fs::read_to_string(runtime::engine_log()) else {
         return bare;
     };
+    ui_url_from_log(&text, cfg.port).unwrap_or(bare)
+}
+
+/// 从日志文本提取指向 `127.0.0.1:<port>` / `localhost:<port>` 的末次带 token URL。
+/// 纯函数便于单测（行内可能是裸 URL，也可能是壳日志前缀 + dsh 输出混写）。
+fn ui_url_from_log(text: &str, port: u16) -> Option<String> {
     for line in text.lines().rev() {
         if !line.contains("token=") {
             continue;
         }
-        // 行内可能是裸 URL，也可能是壳日志前缀 + dsh 输出混写：从 http:// 起截到空白
         let Some(start) = line.find("http://") else {
             continue;
         };
         let url = line[start..].split_whitespace().next().unwrap_or("");
-        if url.contains(&format!("127.0.0.1:{}", cfg.port))
-            || url.contains(&format!("localhost:{}", cfg.port))
+        if url.contains(&format!("127.0.0.1:{port}")) || url.contains(&format!("localhost:{port}"))
         {
-            return url.to_string();
+            return Some(url.to_string());
         }
     }
-    bare
+    None
 }
 
 /// 健康探测：优先专用健康口 `/api/health`（需 dsh 侧插件暴露，见 resources/dsh-health-plugin.js），
@@ -362,7 +373,7 @@ pub fn health_ok(port: u16, timeout_ms: u64) -> bool {
 /// LAST_LOG_AT，故最多每 15s 打一次，不会刷屏。
 fn heartbeat_if_silent() {
     const SILENT_BEFORE_HEARTBEAT: u64 = 15;
-    let now = unix_secs();
+    let now = runtime::unix_secs();
     let last = LAST_LOG_AT.load(Ordering::Relaxed);
     if last == 0 || now.saturating_sub(last) < SILENT_BEFORE_HEARTBEAT {
         return;
@@ -1033,14 +1044,18 @@ enum PageProbe {
 ///
 /// 页面探活判死用：杀掉后下一轮 monitor `try_wait` 看到退出码 → 走既有「崩溃 → 退避重启 +
 /// 诊疗升级」链路，restarts 预算与 doctor 自动生效，无需复制重启逻辑。
-fn kill_tree(pid: u32) {
+/// 返回 Windows 下 taskkill 的退出状态（Unix 为尽力而为的 true）；doctor 的处置结果
+/// 上报复用此返回值（此前 doctor 有一份逐字相同的平台分支）。
+pub(crate) fn kill_tree(pid: u32) -> bool {
     #[cfg(target_os = "windows")]
     {
         let mut cmd = Command::new("taskkill");
         cmd.args(["/T", "/F", "/PID", &pid.to_string()]);
         hide_window(&mut cmd);
         // 带超时：kill_child 在 stop() 持锁期间调用，taskkill 挂起同样会拖死全进程
-        let _ = crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(5));
+        crate::supervisor::capture_timeout(&mut cmd, Duration::from_secs(5))
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
     #[cfg(unix)]
     {
@@ -1055,6 +1070,7 @@ fn kill_tree(pid: u32) {
             }
             terminate_pid(pid);
         }
+        true
     }
 }
 
@@ -1227,6 +1243,30 @@ mod tests {
         assert_eq!(page_probe(2, false), (3, PageProbe::Dead));
         // 判死后计数保持在超限值；恢复后清零
         assert_eq!(page_probe(3, true), (0, PageProbe::Alive));
+    }
+
+    /// ui_url 提取：取**末次**出现的带 token URL；容忍壳日志前缀混写与无 http 的
+    /// token 行；端口不匹配的行跳过；无命中 → None（调用方回退裸 URL）。
+    #[test]
+    fn ui_url_from_log_takes_last_matching_token_url() {
+        let log = "[14:38:40] dsh web listening on http://127.0.0.1:3080/?token=OLD\n\
+                  [14:39:00] http://127.0.0.1:3080\n\
+                  [14:40:00] http://127.0.0.1:3080/?token=NEW\n";
+        assert_eq!(
+            ui_url_from_log(log, 3080).as_deref(),
+            Some("http://127.0.0.1:3080/?token=NEW"),
+            "应取末次出现的 token URL"
+        );
+        // 端口不匹配 → 跳过该行
+        let other = "http://127.0.0.1:3089/?token=X\n";
+        assert_eq!(ui_url_from_log(other, 3080), None);
+        // token 行但无 http://（异常输出）→ 不 panic、继续扫
+        let weird = "[t] token=abc (url missing)\nhttp://localhost:3080/?token=Y\n";
+        assert_eq!(
+            ui_url_from_log(weird, 3080).as_deref(),
+            Some("http://localhost:3080/?token=Y"),
+            "localhost 写法同样识别"
+        );
     }
 
     // ---------- P0-2：Unix 进程树遍历（纯逻辑，不依赖 /proc，全平台可测） ----------
