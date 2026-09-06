@@ -20,9 +20,6 @@ pub fn toast(title: &str, body: &str) {
         // notify-rust 在 Unix 上同样是 summary（Linux 走 libnotify、macOS 走 osascript），
         // 与 Windows 一致；失败静默降级（通知是锦上添花，不阻塞守护）。
         use notify_rust::Notification;
-        let _ = Notification::new()
-            .summary(title)
-            .body(body)
-            .show();
+        let _ = Notification::new().summary(title).body(body).show();
     }
 }

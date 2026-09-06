@@ -51,7 +51,9 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
     if report.was_running {
         match crate::supervisor::stop() {
             Ok(()) => report.steps.push("  已停止 dsh 引擎".to_string()),
-            Err(e) => report.steps.push(format!("  停止引擎失败（继续卸载）：{e}")),
+            Err(e) => report
+                .steps
+                .push(format!("  停止引擎失败（继续卸载）：{e}")),
         }
     } else {
         report.steps.push("  dsh 引擎未在运行".to_string());
@@ -59,7 +61,9 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
 
     // 2. npm uninstall -g。用与 dsh 同目录的 npm，确保卸载的就是 PATH 解析到的那个全局包。
     //    npm 不存在 → 视为 dsh 也不可能由 npm 装（幂等空操作，仍算成功）。
-    report.steps.push("卸载 npm 全局包 @deepseek-ai/dsh…".to_string());
+    report
+        .steps
+        .push("卸载 npm 全局包 @deepseek-ai/dsh…".to_string());
     let installed_before = crate::installer::dsh_installed();
     if !installed_before {
         report.steps.push("  dsh 未安装（无需卸载）".to_string());
@@ -96,7 +100,10 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
     };
     let tail = crate::installer::tail_text(&out.stdout, &out.stderr);
     if !out.status.success() {
-        report.steps.push(format!("  npm uninstall 退出码 {:?}。{tail}", out.status.code()));
+        report.steps.push(format!(
+            "  npm uninstall 退出码 {:?}。{tail}",
+            out.status.code()
+        ));
         report.msg = format!("卸载失败（退出码 {:?}）。{tail}", out.status.code());
         report.ok = false;
         finish(&mut report);
@@ -106,10 +113,7 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
     // 2026-08-23 实测：依赖被占用导致 uninstall 只删了部分，退出码仍 0，PATH 里 dsh 还能解析）。
     let pkg_dir = crate::installer::npm_prefix()
         .map(|p| p.join("node_modules").join("@deepseek-ai").join("dsh"));
-    let pkg_gone = pkg_dir
-        .as_ref()
-        .map(|p| !p.exists())
-        .unwrap_or(true);
+    let pkg_gone = pkg_dir.as_ref().map(|p| !p.exists()).unwrap_or(true);
     report.steps.push(format!("  npm uninstall 完成。{tail}"));
     if !pkg_gone {
         report.steps.push("  ⚠️ npm 全局包 @deepseek-ai/dsh 仍存在（可能被占用导致卸载不完整），请关闭占用 dsh 的进程后重试。".to_string());
@@ -123,16 +127,22 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
     // 3. 可选清数据目录（%USERPROFILE%\.dsh，除非 DSH_HOME 另有设置）。
     let home = crate::runtime::system_home_dir();
     if !keep_data {
-        report.steps.push(format!("清除数据目录 {}…", home.display()));
+        report
+            .steps
+            .push(format!("清除数据目录 {}…", home.display()));
         match remove_all(&home) {
             Ok(()) => {
                 report.data_cleared = true;
                 report.steps.push("  已清除数据目录".to_string());
             }
-            Err(e) => report.steps.push(format!("  清除数据目录失败（跳过）：{e}")),
+            Err(e) => report
+                .steps
+                .push(format!("  清除数据目录失败（跳过）：{e}")),
         }
     } else {
-        report.steps.push(format!("保留数据目录 {}（keep_data）", home.display()));
+        report
+            .steps
+            .push(format!("保留数据目录 {}（keep_data）", home.display()));
     }
 
     // 4. 可选清 PATH 残留 shim（另一套 node 全局目录里的 dsh*——npm uninstall 只清 npm 全局那份）。
@@ -151,7 +161,9 @@ pub fn uninstall_dsh(keep_data: bool, clean_shim: bool) -> UninstallReport {
             Err(e) => report.steps.push(format!("  清理 shim 失败（跳过）：{e}")),
         }
     } else {
-        report.steps.push("保留 PATH 残留 shim（clean_shim=false）".to_string());
+        report
+            .steps
+            .push("保留 PATH 残留 shim（clean_shim=false）".to_string());
     }
 
     finish(&mut report);

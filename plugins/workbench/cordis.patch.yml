@@ -1,0 +1,16 @@
+# md-studio bundle patch —— `dsh.bundle.patch` 挂载层
+#
+# 通过官方 CLI 安装时（dsh plugin --profile <name> add md-studio），dsh 读到本
+# 声明会把 md-studio 追加进 dsh.profile.bundles 层栈，启动时按本文件插入插件行：
+#
+#   - insert:
+#       - id: md-studio
+#         name: 'md-studio'
+#
+# 一条命令即完成「安装 + 挂载」，无需手改 profile 的 cordis.patch.yml。
+#
+# 若 profile 里还残留旧的本地挂载行（name: 'file:///…/plugins/workbench/src/index.ts'），
+# 切到 bundle 通道前先删掉它，避免同一插件双挂载（两个 Node half、两套路由冲突）。
+- insert:
+    - id: md-studio
+      name: 'md-studio'

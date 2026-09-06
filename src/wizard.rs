@@ -8,7 +8,8 @@ use crate::supervisor;
 use std::time::Duration;
 
 /// 等待安装任务完成（轮询 installer 状态）。返回是否成功安装。
-fn wait_install(timeout_secs: u64) -> bool {    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+fn wait_install(timeout_secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let st = crate::installer::install_state();
         if !st.running {
@@ -34,8 +35,13 @@ pub fn start(cfg: &AppConfig) {
             if crate::runtime::dsh_runner().is_none() {
                 let need_node = !crate::installer::npm_installed();
                 if need_node {
-                    supervisor::log("未检测到 Node.js/npm，自动安装 Node.js（winget，可能弹出权限确认）…");
-                    supervisor::set_flash(crate::i18n::tr("正在安装 Node.js…", "Installing Node.js…"));
+                    supervisor::log(
+                        "未检测到 Node.js/npm，自动安装 Node.js（winget，可能弹出权限确认）…",
+                    );
+                    supervisor::set_flash(crate::i18n::tr(
+                        "正在安装 Node.js…",
+                        "Installing Node.js…",
+                    ));
                     crate::notify::toast(
                         crate::i18n::tr("DSH 伴侣", "DSH Companion"),
                         crate::i18n::tr(
@@ -66,7 +72,10 @@ pub fn start(cfg: &AppConfig) {
                     supervisor::set_flash(crate::i18n::tr("正在安装 dsh…", "Installing dsh…"));
                     crate::notify::toast(
                         crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                        crate::i18n::tr("未检测到 dsh，正在自动安装…", "dsh not found; installing automatically…"),
+                        crate::i18n::tr(
+                            "未检测到 dsh，正在自动安装…",
+                            "dsh not found; installing automatically…",
+                        ),
                     );
                     if let Err(e) = crate::installer::start_install("dsh") {
                         supervisor::log(&format!("自动安装 dsh 触发失败: {e}"));
@@ -90,12 +99,16 @@ pub fn start(cfg: &AppConfig) {
                 // 无发行版附带源时报错并提示管理页——不阻塞引擎启动（HLP 缺席只影响 LocalApp）。
                 if crate::hlp_plugin::detect_version().is_none() {
                     supervisor::log("未检测到 HLP 插件，自动安装（LocalApp 生态）…");
-                    match crate::installer::spawn_task("hlp-plugin", || match crate::hlp_plugin::install() {
+                    match crate::installer::spawn_task("hlp-plugin", || {
+                        match crate::hlp_plugin::install() {
                             Ok(m) => (true, m),
                             Err(e) => (false, e),
-                        }) {
+                        }
+                    }) {
                         Err(e) => {
-                            supervisor::log(&format!("HLP 插件安装无法启动：{e}（管理页可手动安装）"));
+                            supervisor::log(&format!(
+                                "HLP 插件安装无法启动：{e}（管理页可手动安装）"
+                            ));
                             crate::notify::toast(
                                 crate::i18n::tr("DSH 伴侣", "DSH Companion"),
                                 crate::i18n::tr(
@@ -124,7 +137,8 @@ pub fn start(cfg: &AppConfig) {
             match crate::run_first_boot(&exec_cfg, mode) {
                 Ok(()) => {
                     // 引擎已 spawn，等就绪
-                    let deadline = std::time::Instant::now() + Duration::from_secs(exec_cfg.startup_timeout_secs);
+                    let deadline = std::time::Instant::now()
+                        + Duration::from_secs(exec_cfg.startup_timeout_secs);
                     let mut became_ready = false;
                     loop {
                         if supervisor::status().ready {

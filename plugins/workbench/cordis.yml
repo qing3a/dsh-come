@@ -1,0 +1,11 @@
+# 开发 overlay：本地加载 workbench 插件（dsh web --patch 本文件）
+# Windows 踩坑：name 必须用 file:/// URL 形式（裸 C:/... 会被 ESM loader 当成协议 'c:'）
+# 加载方式（隔离 home + 临时端口，避免污染生产 dsh）：
+#   $env:DSH_HOME = '<临时隔离目录>\home'
+#   dsh web --patch C:/Users/Administrator/Desktop/dsh-come/plugins/workbench/cordis.yml --host 127.0.0.1 --port 3199
+# 启动后访问 http://127.0.0.1:3199/workbench 即工作台页面
+- insert:
+    - id: md-studio
+      name: 'file:///C:/Users/Administrator/Desktop/dsh-come/plugins/workbench/src/index.ts'
+      # config:
+      #   dataDir: '~/workbench-data'

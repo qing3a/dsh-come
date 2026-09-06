@@ -73,7 +73,8 @@ impl ApplicationHandler<UserEvent> for App {
         _el: &ActiveEventLoop,
         _id: winit::window::WindowId,
         _event: winit::event::WindowEvent,
-    ) {}
+    ) {
+    }
 
     fn new_events(&mut self, _el: &ActiveEventLoop, cause: StartCause) {
         if matches!(cause, StartCause::Init) {
@@ -111,7 +112,10 @@ impl ApplicationHandler<UserEvent> for App {
                         match supervisor::restart(&cfg) {
                             Ok(()) => {
                                 supervisor::log("引擎已重启");
-                                supervisor::set_flash(crate::i18n::tr("引擎已重启", "Engine restarted"));
+                                supervisor::set_flash(crate::i18n::tr(
+                                    "引擎已重启",
+                                    "Engine restarted",
+                                ));
                             }
                             Err(e) => {
                                 supervisor::log(&format!("引擎重启失败: {e}"));
@@ -248,7 +252,9 @@ impl App {
         self.items.status.set_text(&status_text);
         self.items.open.set_enabled(st.ready);
         // 同步复选框（配置可能被其他路径修改，保持菜单与持久化一致）
-        self.items.exit_close.set_checked(config::load().exit_close_engine);
+        self.items
+            .exit_close
+            .set_checked(config::load().exit_close_engine);
         // 更新项：发现新版本 → 「更新到 vX」（启用）；否则禁用占位
         match crate::updater::available() {
             Some(info) => {
@@ -434,26 +440,32 @@ fn build_ui() -> (Menu, MenuItems) {
     // 状态行：禁用项，仅展示
     let status_item = MenuItem::new(&status_text, false, None);
     // 「打开 dsh 界面」置顶（最常用）：打开引擎本体 UI（3080）
-    let open_item = MenuItem::new(crate::i18n::tr("打开 dsh 界面", "Open dsh UI"), st.ready, None);
+    let open_item = MenuItem::new(
+        crate::i18n::tr("打开 dsh 界面", "Open dsh UI"),
+        st.ready,
+        None,
+    );
     // 「打开管理页」：打开 dsh-come 管理页（3081）
-    let open_admin_item = MenuItem::new(crate::i18n::tr("打开管理页", "Open admin page"), true, None);
+    let open_admin_item =
+        MenuItem::new(crate::i18n::tr("打开管理页", "Open admin page"), true, None);
     let restart_item = MenuItem::new(crate::i18n::tr("重启引擎", "Restart engine"), true, None);
     // 「退出时关闭引擎」复选框（2026-08-21）：勾选=退出 dsh-come 时杀引擎（默认）；
     // 取消勾选=退出保留引擎运行。勾选状态持久化在 config.exit_close_engine。
     // 注意 CheckMenuItem::new 签名 = (text, enabled, checked, accelerator)。
     let exit_close_item = CheckMenuItem::new(
         crate::i18n::tr("退出时关闭引擎", "Close engine on exit"),
-        true, // enabled：始终可点击
+        true,                             // enabled：始终可点击
         config::load().exit_close_engine, // checked：随配置
         None,
     );
-    let logs_item = MenuItem::new(crate::i18n::tr("打开日志目录", "Open log folder"), true, None);
-    // 「检查更新」：手动检查（无视每日节流）；「更新到 vX」：有可用更新时启用
-    let check_update_item = MenuItem::new(
-        crate::i18n::tr("检查更新", "Check for updates"),
+    let logs_item = MenuItem::new(
+        crate::i18n::tr("打开日志目录", "Open log folder"),
         true,
         None,
     );
+    // 「检查更新」：手动检查（无视每日节流）；「更新到 vX」：有可用更新时启用
+    let check_update_item =
+        MenuItem::new(crate::i18n::tr("检查更新", "Check for updates"), true, None);
     let update_item = MenuItem::new(
         crate::i18n::tr("暂无可用更新", "No update available"),
         false,
@@ -506,7 +518,10 @@ fn status_line(st: &supervisor::SuperStatus) -> String {
         if let Some(secs) = st.stage_elapsed {
             if secs >= 30 {
                 if crate::i18n::is_en() {
-                    s.push_str(&format!(" (elapsed {})", crate::supervisor::fmt_elapsed(secs)));
+                    s.push_str(&format!(
+                        " (elapsed {})",
+                        crate::supervisor::fmt_elapsed(secs)
+                    ));
                 } else {
                     s.push_str(&format!("（已 {}）", crate::supervisor::fmt_elapsed(secs)));
                 }
@@ -562,7 +577,8 @@ fn load_tray_icon() -> tray_icon::Icon {
     supervisor::log(&format!(
         "托盘图标加载：{}（{}x{}，is_light={is_light}）",
         if is_light { "4条黑线" } else { "4条白线" },
-        size, size
+        size,
+        size
     ));
     gen_tray_icon(is_light, size)
 }
@@ -574,7 +590,11 @@ fn tray_icon_size() -> u32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON};
     // SAFETY: 纯指标查询，无副作用
     let s = unsafe { GetSystemMetrics(SM_CXSMICON) };
-    if s > 0 { s as u32 } else { 16 }
+    if s > 0 {
+        s as u32
+    } else {
+        16
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -589,7 +609,7 @@ fn tray_icon_size() -> u32 {
 /// 由 `4*line + 3*2 = area` 得 `line = (area-6)/4`，使**3 个间距严格相等（2px）**，
 /// 且线宽随尺寸加粗：16px→2、20px→3、24px→4、28px→5、32px→6。
 fn tray_line_geometry(size: u32) -> (u32, [u32; 4]) {
-    let pad = 1u32;              // 四周留白（不贴边）
+    let pad = 1u32; // 四周留白（不贴边）
     let area = size.saturating_sub(2 * pad);
     // 线宽最大化；area<10（size<12）时退化为 area/4
     let line = if area >= 10 {
@@ -650,8 +670,7 @@ fn gen_tray_icon(is_light: bool, size: u32) -> tray_icon::Icon {
 fn is_light_theme() -> bool {
     use std::ptr;
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
-        REG_DWORD,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
     };
 
     let sub_key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
@@ -721,14 +740,21 @@ fn is_light_theme() -> bool {
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(dark) = output_contains(&["defaults", "read", "-g", "AppleInterfaceStyle"], "dark") {
+        if let Some(dark) =
+            output_contains(&["defaults", "read", "-g", "AppleInterfaceStyle"], "dark")
+        {
             return !dark; // "Dark" → 深色 → false
         }
     }
     #[cfg(target_os = "linux")]
     {
         if let Some(dark) = output_contains(
-            &["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
+            &[
+                "gsettings",
+                "get",
+                "org.gnome.desktop.interface",
+                "gtk-theme",
+            ],
             "dark",
         ) {
             return !dark;
@@ -748,13 +774,11 @@ fn is_light_theme() -> bool {
 fn spawn_theme_watcher(proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            CreateEventW, WaitForSingleObject, INFINITE,
-        };
         use windows_sys::Win32::System::Registry::{
-            RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
-            KEY_READ, REG_NOTIFY_CHANGE_LAST_SET,
+            RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+            REG_NOTIFY_CHANGE_LAST_SET,
         };
+        use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
         let sub_key: Vec<u16> =
             "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
@@ -776,10 +800,10 @@ fn spawn_theme_watcher(proxy: EventLoopProxy<UserEvent>) {
                 // SAFETY: hkey 已打开，event 是合法句柄
                 let ok = RegNotifyChangeKeyValue(
                     hkey,
-                    0,             // bWatchSubtree=FALSE
+                    0, // bWatchSubtree=FALSE
                     REG_NOTIFY_CHANGE_LAST_SET,
                     event,
-                    1,             // fAsynchronous=TRUE
+                    1, // fAsynchronous=TRUE
                 );
                 if ok != 0 {
                     CloseHandle(event);

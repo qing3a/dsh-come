@@ -156,7 +156,11 @@ mod tests {
         let es = parse_entries(text);
         assert_eq!(es.len(), 2, "应切出两个顶层条目");
         assert_eq!(es[0].id.as_deref(), Some("aaa"));
-        assert_eq!(es[1].id.as_deref(), Some("bbb"), "换行写法的 id 必须也能识别");
+        assert_eq!(
+            es[1].id.as_deref(),
+            Some("bbb"),
+            "换行写法的 id 必须也能识别"
+        );
         assert!(es[1].name.as_deref().unwrap().contains("D:/y"));
     }
 
@@ -199,8 +203,14 @@ mod tests {
     /// file:// 路径归一化：/C:/x → C:/x，非盘符路径保持原样。
     #[test]
     fn file_uri_path_normalization() {
-        assert_eq!(file_uri_path("name: 'file:///C:/a/b'").as_deref(), Some("C:/a/b"));
-        assert_eq!(file_uri_path("name: 'file:///home/u'").as_deref(), Some("/home/u"));
+        assert_eq!(
+            file_uri_path("name: 'file:///C:/a/b'").as_deref(),
+            Some("C:/a/b")
+        );
+        assert_eq!(
+            file_uri_path("name: 'file:///home/u'").as_deref(),
+            Some("/home/u")
+        );
         assert_eq!(file_uri_path("name: 'npm:foo'"), None);
         assert_eq!(file_uri_path(""), None);
     }
@@ -209,6 +219,9 @@ mod tests {
     fn patch_shape_sanity() {
         assert!(looks_like_patch("[]\n"));
         assert!(looks_like_patch("# c\n- id: a\n  x: 1\n"));
-        assert!(!looks_like_patch("just-a-string\n"), "顶层裸字符串不是合法 patch");
+        assert!(
+            !looks_like_patch("just-a-string\n"),
+            "顶层裸字符串不是合法 patch"
+        );
     }
 }

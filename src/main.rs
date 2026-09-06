@@ -50,7 +50,7 @@ pub fn run_first_boot(cfg: &config::AppConfig, mode: Mode) -> Result<(), String>
 fn acquire_single_instance() -> bool {
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
     static LOCK: OnceLock<OwnedHandle> = OnceLock::new();
@@ -106,7 +106,10 @@ fn headless_loop() {
         let _ = rx.recv();
         eprintln!(
             "{}",
-            crate::i18n::tr("收到 Ctrl+C，清理 dsh 引擎…", "Ctrl+C received, shutting down the dsh engine…")
+            crate::i18n::tr(
+                "收到 Ctrl+C，清理 dsh 引擎…",
+                "Ctrl+C received, shutting down the dsh engine…"
+            )
         );
     } else {
         loop {
@@ -145,7 +148,10 @@ fn main() {
     if let Err(e) = runtime::ensure_layout() {
         eprintln!(
             "{}: {e}",
-            crate::i18n::tr("初始化运行时目录失败", "Failed to initialize runtime directories")
+            crate::i18n::tr(
+                "初始化运行时目录失败",
+                "Failed to initialize runtime directories"
+            )
         );
         std::process::exit(1);
     }
@@ -189,7 +195,10 @@ fn main() {
     // acquired==true 会把「守护其实在跑」误报成「未运行」（审计 P2-4）。
     // 心跳窗口 10s >> 监测轮询间隔（~1s），崩溃后最多 1s 即判死。
     if sub == "status" {
-        if supervisor::state_stale_secs().map(|s| s < 10).unwrap_or(false) {
+        if supervisor::state_stale_secs()
+            .map(|s| s < 10)
+            .unwrap_or(false)
+        {
             println!("{}", supervisor::read_state_json());
         } else {
             println!(
@@ -207,7 +216,10 @@ fn main() {
         if acquired {
             println!(
                 "{}",
-                crate::i18n::tr("守护未运行，无需停止", "daemon not running, nothing to stop")
+                crate::i18n::tr(
+                    "守护未运行，无需停止",
+                    "daemon not running, nothing to stop"
+                )
             );
         } else {
             let (stopped, _) = supervisor::request_stop_and_wait();
@@ -418,7 +430,10 @@ fn main() {
     if no_tray {
         eprintln!(
             "{}",
-            crate::i18n::tr("[--no-tray] 无头模式，Ctrl+C 退出。", "[--no-tray] headless mode, Ctrl+C to exit.")
+            crate::i18n::tr(
+                "[--no-tray] 无头模式，Ctrl+C 退出。",
+                "[--no-tray] headless mode, Ctrl+C to exit."
+            )
         );
         headless_loop();
     } else {
@@ -445,7 +460,10 @@ fn main() {
 
 fn print_help() {
     let name = crate::i18n::tr("DSH 伴侣", "DSH Companion");
-    let tagline = crate::i18n::tr("双击即用的 DeepSeek Harness", "one-click DeepSeek Harness desktop app");
+    let tagline = crate::i18n::tr(
+        "双击即用的 DeepSeek Harness",
+        "one-click DeepSeek Harness desktop app",
+    );
     let usage = crate::i18n::tr("用法", "Usage");
     let sub = crate::i18n::tr("子命令", "Subcommands");
     let env = crate::i18n::tr("环境变量", "Environment variables");
@@ -468,7 +486,10 @@ fn print_help() {
          \x20  DSH_DESKTOP_PORT      {e2}\n\
          \x20  DSH_DESKTOP_NO_TRAY   {e3}",
         st = crate::i18n::tr("查询 dsh 运行状态（JSON）", "query dsh status (JSON)"),
-        sp = crate::i18n::tr("停止 dsh 引擎（看门狗继续后台）", "stop the dsh engine (watchdog keeps running)"),
+        sp = crate::i18n::tr(
+            "停止 dsh 引擎（看门狗继续后台）",
+            "stop the dsh engine (watchdog keeps running)"
+        ),
         ce = crate::i18n::tr("打开配置文件", "open config file"),
         dc = crate::i18n::tr("独立诊断", "standalone diagnostics"),
         up = crate::i18n::tr("检查更新（输出 JSON）", "check for updates (prints JSON)"),
@@ -476,8 +497,14 @@ fn print_help() {
             "纯净卸载系统 dsh（默认保数据、不删 shim）",
             "cleanly uninstall system dsh (keeps data and shim by default)"
         ),
-        e0 = crate::i18n::tr("数据根目录（默认 %LOCALAPPDATA%\\dsh-come）", "data root (default %LOCALAPPDATA%\\dsh-come)"),
-        e1 = crate::i18n::tr("数据根目录（旧名，兼容）", "data root (legacy name, kept for compatibility)"),
+        e0 = crate::i18n::tr(
+            "数据根目录（默认 %LOCALAPPDATA%\\dsh-come）",
+            "data root (default %LOCALAPPDATA%\\dsh-come)"
+        ),
+        e1 = crate::i18n::tr(
+            "数据根目录（旧名，兼容）",
+            "data root (legacy name, kept for compatibility)"
+        ),
         legacy = crate::i18n::tr("旧名，兼容", "legacy, compatible"),
         e2 = crate::i18n::tr("引擎端口（默认 3080）", "engine port (default 3080)"),
         e3 = crate::i18n::tr("1 时等同 --no-tray", "equivalent to --no-tray when 1"),

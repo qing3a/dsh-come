@@ -46,8 +46,14 @@ fn registry_path_values() -> Vec<String> {
         KEY_QUERY_VALUE, REG_EXPAND_SZ, REG_SZ,
     };
     const KEYS: &[(&str, &str)] = &[
-        ("Software\\Microsoft\\Windows\\CurrentVersion\\Environment", "HKCU"),
-        ("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "HKLM"),
+        (
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Environment",
+            "HKCU",
+        ),
+        (
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+            "HKLM",
+        ),
     ];
     let mut out = Vec::new();
     unsafe {
@@ -93,9 +99,18 @@ fn registry_path_values() -> Vec<String> {
 fn expand_common_vars(s: &str) -> String {
     let mut out = s.to_string();
     let map = [
-        ("%SystemRoot%", std::env::var_os("SystemRoot").map(|v| v.to_string_lossy().into_owned())),
-        ("%USERPROFILE%", std::env::var_os("USERPROFILE").map(|v| v.to_string_lossy().into_owned())),
-        ("%USERNAME%", std::env::var_os("USERNAME").map(|v| v.to_string_lossy().into_owned())),
+        (
+            "%SystemRoot%",
+            std::env::var_os("SystemRoot").map(|v| v.to_string_lossy().into_owned()),
+        ),
+        (
+            "%USERPROFILE%",
+            std::env::var_os("USERPROFILE").map(|v| v.to_string_lossy().into_owned()),
+        ),
+        (
+            "%USERNAME%",
+            std::env::var_os("USERNAME").map(|v| v.to_string_lossy().into_owned()),
+        ),
     ];
     for (k, v) in map {
         if let Some(v) = v {
@@ -308,7 +323,10 @@ pub fn start_install(kind: &str) -> Result<(), String> {
 }
 
 /// 复用同一安装任务槽跑任意异步任务（status.rs 的插件安装用它，保持单任务互斥）。
-pub fn spawn_task(kind: &str, f: impl FnOnce() -> (bool, String) + Send + 'static) -> Result<(), String> {
+pub fn spawn_task(
+    kind: &str,
+    f: impl FnOnce() -> (bool, String) + Send + 'static,
+) -> Result<(), String> {
     start_install_boxed(kind.to_string(), f)
 }
 
@@ -318,7 +336,11 @@ fn start_install_boxed(
 ) -> Result<(), String> {
     let running = install_slot().lock().map_err(|e| e.to_string())?.running;
     if running {
-        let k = install_slot().lock().map_err(|e| e.to_string())?.kind.clone();
+        let k = install_slot()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .kind
+            .clone();
         return Err(format!("已有安装任务进行中（{}）", k.unwrap_or_default()));
     }
     set_install(InstallState {
@@ -359,8 +381,13 @@ fn install_node() -> (bool, String) {
         };
         let mut cmd = std::process::Command::new(&winget);
         cmd.args([
-            "install", "-e", "--id", "OpenJS.NodeJS.LTS",
-            "--silent", "--accept-package-agreements", "--accept-source-agreements",
+            "install",
+            "-e",
+            "--id",
+            "OpenJS.NodeJS.LTS",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
             "--disable-interactivity",
         ]);
         crate::supervisor::hide_window(&mut cmd);
@@ -392,7 +419,10 @@ fn install_node() -> (bool, String) {
                     } else {
                         (
                             false,
-                            format!("Node.js 安装失败（apt，退出码 {:?}）。{tail}", out.status.code()),
+                            format!(
+                                "Node.js 安装失败（apt，退出码 {:?}）。{tail}",
+                                out.status.code()
+                            ),
                         )
                     }
                 }
@@ -418,7 +448,10 @@ fn install_node() -> (bool, String) {
                     } else {
                         (
                             false,
-                            format!("Node.js 安装失败（brew，退出码 {:?}）。{tail}", out.status.code()),
+                            format!(
+                                "Node.js 安装失败（brew，退出码 {:?}）。{tail}",
+                                out.status.code()
+                            ),
                         )
                     }
                 }
@@ -427,7 +460,8 @@ fn install_node() -> (bool, String) {
         } else {
             (
                 false,
-                "未找到包管理器（brew）。请手动安装 Node.js（https://nodejs.org）后刷新管理页。".to_string(),
+                "未找到包管理器（brew）。请手动安装 Node.js（https://nodejs.org）后刷新管理页。"
+                    .to_string(),
             )
         }
     }
@@ -441,7 +475,10 @@ fn install_node() -> (bool, String) {
 /// %AppData%\npm，而 PATH 里另一套 node 生态的 dsh 排前面，导致「装完版本没变」。
 fn install_dsh(spec: Option<&str>) -> (bool, String) {
     if !npm_installed() {
-        return (false, "未找到 npm，请先安装 Node.js（管理页「安装 Node」）".to_string());
+        return (
+            false,
+            "未找到 npm，请先安装 Node.js（管理页「安装 Node」）".to_string(),
+        );
     }
     if spec.is_none() && dsh_installed() {
         return (true, "dsh 已安装，无需重复安装".to_string());
@@ -595,7 +632,10 @@ pub fn is_prerelease(version: &str) -> bool {
 /// dsh 最新正式版（无预发布后缀）：版本列表中过滤预发布版后取最后一项；
 /// 无正式版时退回 dist-tag latest。
 pub fn dsh_latest_stable() -> Option<String> {
-    let stable: Vec<String> = dsh_versions().into_iter().filter(|v| !is_prerelease(v)).collect();
+    let stable: Vec<String> = dsh_versions()
+        .into_iter()
+        .filter(|v| !is_prerelease(v))
+        .collect();
     if let Some(v) = stable.last() {
         return Some(v.clone());
     }
@@ -604,7 +644,10 @@ pub fn dsh_latest_stable() -> Option<String> {
 
 /// dsh 最新预发布版（版本列表中过滤正式版后取最后一项）。无预发布版 → None。
 pub fn dsh_latest_prerelease() -> Option<String> {
-    let pre: Vec<String> = dsh_versions().into_iter().filter(|v| is_prerelease(v)).collect();
+    let pre: Vec<String> = dsh_versions()
+        .into_iter()
+        .filter(|v| is_prerelease(v))
+        .collect();
     pre.last().cloned()
 }
 
@@ -627,7 +670,11 @@ pub fn dsh_dist_tags() -> serde_json::Value {
 pub fn dsh_versions() -> Vec<String> {
     npm_view("versions")
         .and_then(|v| v.as_array().cloned())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -641,7 +688,10 @@ pub fn dsh_versions_json() -> serde_json::Value {
     let latest_stable = dsh_latest_stable();
     let latest_prerelease = dsh_latest_prerelease();
     let tags = dsh_dist_tags();
-    let latest_tag = tags.get("latest").and_then(|v| v.as_str()).map(String::from);
+    let latest_tag = tags
+        .get("latest")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let versions = dsh_versions();
     let has_update = match (&latest, &current) {
         (Some(l), Some(c)) => l != c,

@@ -94,7 +94,10 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     let (na, pa) = parse_core(a);
     let (nb, pb) = parse_core(b);
     for i in 0..na.len().max(nb.len()) {
-        let (x, y) = (na.get(i).copied().unwrap_or(0), nb.get(i).copied().unwrap_or(0));
+        let (x, y) = (
+            na.get(i).copied().unwrap_or(0),
+            nb.get(i).copied().unwrap_or(0),
+        );
         match x.cmp(&y) {
             Ordering::Equal => continue,
             o => return o,
@@ -193,7 +196,10 @@ fn fetch_next_update_info() -> Result<UpdateInfo, String> {
         .send()
         .map_err(|e| format!("查询 GitHub Releases 失败（网络）: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("查询 GitHub Releases 失败（HTTP {}）", resp.status()));
+        return Err(format!(
+            "查询 GitHub Releases 失败（HTTP {}）",
+            resp.status()
+        ));
     }
     let releases: Vec<serde_json::Value> = resp
         .json()
@@ -202,7 +208,11 @@ fn fetch_next_update_info() -> Result<UpdateInfo, String> {
     let asset_name = format!("update-{}.json", platform_suffix());
     let mut prereleases: Vec<&serde_json::Value> = releases
         .iter()
-        .filter(|r| r.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|r| {
+            r.get("prerelease")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        })
         .collect();
     prereleases.sort_by(|a, b| {
         let ta = a.get("published_at").and_then(|v| v.as_str()).unwrap_or("");
@@ -211,9 +221,10 @@ fn fetch_next_update_info() -> Result<UpdateInfo, String> {
     });
     for release in &prereleases {
         if let Some(assets) = release.get("assets").and_then(|v| v.as_array()) {
-            if let Some(asset) = assets.iter().find(|a| {
-                a.get("name").and_then(|n| n.as_str()) == Some(asset_name.as_str())
-            }) {
+            if let Some(asset) = assets
+                .iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(asset_name.as_str()))
+            {
                 if let Some(url) = asset.get("browser_download_url").and_then(|u| u.as_str()) {
                     let resp = client
                         .get(url)
@@ -222,7 +233,9 @@ fn fetch_next_update_info() -> Result<UpdateInfo, String> {
                     if !resp.status().is_success() {
                         return Err(format!("下载预发布更新清单失败（HTTP {}）", resp.status()));
                     }
-                    return resp.json().map_err(|e| format!("预发布更新清单解析失败: {e}"));
+                    return resp
+                        .json()
+                        .map_err(|e| format!("预发布更新清单解析失败: {e}"));
                 }
             }
         }
@@ -294,7 +307,8 @@ pub fn download_and_verify(info: &UpdateInfo) -> Result<PathBuf, String> {
         let _ = std::fs::remove_file(&new_path);
         return Err(format!("校验失败：期望 {}，实际 {}", info.sha256, hash));
     }
-    std::fs::write(&new_path, bytes).map_err(|e| format!("写入 {} 失败: {e}", new_path.display()))?;
+    std::fs::write(&new_path, bytes)
+        .map_err(|e| format!("写入 {} 失败: {e}", new_path.display()))?;
     Ok(new_path)
 }
 
@@ -475,8 +489,7 @@ pub fn install(new_path: &Path) -> Result<(), String> {
         cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script);
         crate::supervisor::hide_window(&mut cmd);
-        cmd.spawn()
-            .map_err(|e| format!("启动换装脚本失败: {e}"))?;
+        cmd.spawn().map_err(|e| format!("启动换装脚本失败: {e}"))?;
         Ok(())
     }
 }
@@ -499,20 +512,41 @@ mod tests {
     #[test]
     fn version_compare_semver_prerelease() {
         // 正式版 > 预发布版（semver 核心规则）
-        assert_eq!(compare_versions("0.1.2", "0.1.2-alpha.1"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("0.1.2", "0.1.2-alpha.1"),
+            Ordering::Greater
+        );
         assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2"), Ordering::Less);
         // alpha < beta < rc（预发布类型优先级）
-        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-beta.1"), Ordering::Less);
-        assert_eq!(compare_versions("0.1.2-beta.1", "0.1.2-rc.1"), Ordering::Less);
-        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-rc.1"), Ordering::Less);
+        assert_eq!(
+            compare_versions("0.1.2-alpha.1", "0.1.2-beta.1"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("0.1.2-beta.1", "0.1.2-rc.1"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("0.1.2-alpha.1", "0.1.2-rc.1"),
+            Ordering::Less
+        );
         // 同类型预发布版，数字大的更新
-        assert_eq!(compare_versions("0.1.2-alpha.2", "0.1.2-alpha.1"), Ordering::Greater);
-        assert_eq!(compare_versions("0.1.2-rc.2", "0.1.2-rc.1"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("0.1.2-alpha.2", "0.1.2-alpha.1"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("0.1.2-rc.2", "0.1.2-rc.1"),
+            Ordering::Greater
+        );
         // 数字段不同时，后缀不影响比较结果
         assert_eq!(compare_versions("0.1.1-rc.2", "0.1.0"), Ordering::Greater);
         assert_eq!(compare_versions("0.2.0", "0.1.1-rc.2"), Ordering::Greater);
         // 相等
-        assert_eq!(compare_versions("0.1.2-alpha.1", "0.1.2-alpha.1"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("0.1.2-alpha.1", "0.1.2-alpha.1"),
+            Ordering::Equal
+        );
     }
 
     #[test]
@@ -537,8 +571,14 @@ mod tests {
             "systemctl --user start dsh-come.service 2>/dev/null || true",
         );
         // 看门狗停/复命令原样进入脚本（换装窗口期防 KeepAlive/Restart 拉起旧版本）
-        assert!(script.contains("systemctl --user stop dsh-come.service"), "缺少停看门狗步骤");
-        assert!(script.contains("systemctl --user start dsh-come.service"), "缺少恢复看门狗步骤");
+        assert!(
+            script.contains("systemctl --user stop dsh-come.service"),
+            "缺少停看门狗步骤"
+        );
+        assert!(
+            script.contains("systemctl --user start dsh-come.service"),
+            "缺少恢复看门狗步骤"
+        );
         // 顺序：停看门狗在等退出之前，恢复在替换之后（顺序错 = 换装必死等或误拉旧版）
         let stop_idx = script.find("systemctl --user stop").unwrap();
         let wait_idx = script.find("kill -0 1234").unwrap();
@@ -549,8 +589,14 @@ mod tests {
         // Unix 必补可执行位（下载文件不保证带 +x，mv 保留新文件自身权限）
         assert!(script.contains("chmod +x"), "缺少 chmod +x");
         // 路径被单引号包裹（含空格/特殊字符路径安全）
-        assert!(script.contains("'/opt/dsh-come/dsh-come'"), "exe 路径必须 sh_quote");
-        assert!(script.contains("'/opt/dsh-come/dsh-come.new'"), "new 路径必须 sh_quote");
+        assert!(
+            script.contains("'/opt/dsh-come/dsh-come'"),
+            "exe 路径必须 sh_quote"
+        );
+        assert!(
+            script.contains("'/opt/dsh-come/dsh-come.new'"),
+            "new 路径必须 sh_quote"
+        );
         // 备份/拉起/自删
         assert!(script.contains("cp -f"), "缺少备份步骤");
         assert!(script.contains("nohup"), "缺少拉起新版本步骤");

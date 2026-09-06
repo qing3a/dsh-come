@@ -220,7 +220,11 @@ fn is_same_origin_local(port: u16, headers: &[(String, &str)]) -> bool {
     let hosts = ["127.0.0.1", "localhost"];
 
     let host_ok = header(headers, "host")
-        .map(|v| hosts.iter().any(|h| v.eq_ignore_ascii_case(&format!("{h}:{port}"))))
+        .map(|v| {
+            hosts
+                .iter()
+                .any(|h| v.eq_ignore_ascii_case(&format!("{h}:{port}")))
+        })
         .unwrap_or(false);
     let origin_ok = header(headers, "origin")
         .map(|v| {
@@ -262,11 +266,16 @@ fn csrf_token() -> &'static str {
 fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static str, String) {
     match (method, path) {
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", admin_html()),
-        ("GET", "/api/status") => ("200 OK", "application/json; charset=utf-8", status_json(cfg)),
+        ("GET", "/api/status") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            status_json(cfg),
+        ),
         ("GET", "/api/install/status") => (
             "200 OK",
             "application/json; charset=utf-8",
-            serde_json::to_string(&crate::installer::install_state()).unwrap_or_else(|_| "{}".into()),
+            serde_json::to_string(&crate::installer::install_state())
+                .unwrap_or_else(|_| "{}".into()),
         ),
         // ---------- dsh 版本管理（2026-09-01 恢复：收敛轮误删——dsh 是 npm 包，版本切换只能走 npm，dsh web 无此能力） ----------
         ("GET", "/api/dsh/versions") => (
@@ -279,9 +288,16 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 Ok(()) => ok_json(&format!(
                     "{} {v}（{}）",
                     crate::i18n::tr("已触发更新到", "Update to"),
-                    crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+                    crate::i18n::tr(
+                        "异步进行，稍后刷新查看结果",
+                        "running asynchronously; refresh to see the result"
+                    )
                 )),
-                Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+                Err(e) => (
+                    "409 Conflict",
+                    "application/json; charset=utf-8",
+                    err_json(&e),
+                ),
             },
             None => (
                 "502 Bad Gateway",
@@ -295,15 +311,26 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         ("POST", path) if path.starts_with("/api/dsh/install-version/") => {
             let ver = &path["/api/dsh/install-version/".len()..];
             if ver.is_empty() {
-                ("400 Bad Request", "application/json; charset=utf-8", err_json(&crate::i18n::tr("缺少版本号", "Missing version")))
+                (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    err_json(&crate::i18n::tr("缺少版本号", "Missing version")),
+                )
             } else {
                 match crate::installer::start_dsh_install(ver) {
                     Ok(()) => ok_json(&format!(
                         "{} dsh@{ver}（{}）",
                         crate::i18n::tr("已触发安装", "Install triggered for"),
-                        crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+                        crate::i18n::tr(
+                            "异步进行，稍后刷新查看结果",
+                            "running asynchronously; refresh to see the result"
+                        )
                     )),
-                    Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+                    Err(e) => (
+                        "409 Conflict",
+                        "application/json; charset=utf-8",
+                        err_json(&e),
+                    ),
                 }
             }
         }
@@ -323,21 +350,33 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
                 "已触发 HLP 插件安装（异步进行，稍后刷新查看结果）",
                 "HLP plugin install triggered (async; refresh to see the result)",
             )),
-            Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+            Err(e) => (
+                "409 Conflict",
+                "application/json; charset=utf-8",
+                err_json(&e),
+            ),
         },
-        ("POST", "/api/hlp/repair") => match crate::installer::spawn_task("hlp-repair", || {
-            match crate::hlp_plugin::repair() {
+        ("POST", "/api/hlp/repair") => {
+            match crate::installer::spawn_task("hlp-repair", || match crate::hlp_plugin::repair() {
                 Ok(m) => (true, m),
                 Err(e) => (false, e),
+            }) {
+                Ok(()) => ok_json(&crate::i18n::tr(
+                    "已触发 HLP 插件修复（备份旧目录后重装，异步进行）",
+                    "HLP plugin repair triggered (backup + reinstall, async)",
+                )),
+                Err(e) => (
+                    "409 Conflict",
+                    "application/json; charset=utf-8",
+                    err_json(&e),
+                ),
             }
-        }) {
-            Ok(()) => ok_json(&crate::i18n::tr(
-                "已触发 HLP 插件修复（备份旧目录后重装，异步进行）",
-                "HLP plugin repair triggered (backup + reinstall, async)",
-            )),
-            Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
-        },
-        ("GET", "/api/hlp/apps") => ("200 OK", "application/json; charset=utf-8", hlp_apps_json(cfg)),
+        }
+        ("GET", "/api/hlp/apps") => (
+            "200 OK",
+            "application/json; charset=utf-8",
+            hlp_apps_json(cfg),
+        ),
         ("GET", "/api/hlp/data-dir") => (
             "200 OK",
             "application/json; charset=utf-8",
@@ -357,7 +396,11 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
             let opener = "xdg-open";
             match std::process::Command::new(opener).arg(&dir).spawn() {
                 Ok(_) => ok_json(&format!("已打开 {}", dir.display())),
-                Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&format!("打开目录失败：{e}"))),
+                Err(e) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    err_json(&format!("打开目录失败：{e}")),
+                ),
             }
         }
         // ---------- 启动器配置（更新通道等） ----------
@@ -375,7 +418,11 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         ("POST", path) if path.starts_with("/api/config/update-channel/") => {
             let channel = &path["/api/config/update-channel/".len()..];
             if channel != "latest" && channel != "next" {
-                ("400 Bad Request", "application/json; charset=utf-8", err_json("通道必须是 latest 或 next"))
+                (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    err_json("通道必须是 latest 或 next"),
+                )
             } else {
                 let mut new_cfg = cfg.clone();
                 new_cfg.update_channel = channel.to_string();
@@ -391,7 +438,9 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         }
         // ---------- 插件管理（2026-09-01 恢复：dsh-plugin-guide §发布期「进壳的插件市场一键装/卸」本就是壳的职责；收敛轮误删） ----------
         ("GET", "/api/plugins") => ("200 OK", "application/json; charset=utf-8", plugins_json()),
-        ("POST", path) if path == "/api/plugin/install" || path.starts_with("/api/plugin/install?") => {
+        ("POST", path)
+            if path == "/api/plugin/install" || path.starts_with("/api/plugin/install?") =>
+        {
             let src = query_str(path, "src");
             let id = query_str(path, "id");
             match install_plugin(src.as_deref(), id.as_deref()) {
@@ -405,18 +454,28 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         ("POST", path) if path.starts_with("/api/plugin/uninstall/") => {
             let id = &path["/api/plugin/uninstall/".len()..];
             if id.is_empty() {
-                ("400 Bad Request", "application/json; charset=utf-8", err_json(&crate::i18n::tr("缺少插件 id", "Missing plugin id")))
+                (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    err_json(&crate::i18n::tr("缺少插件 id", "Missing plugin id")),
+                )
             } else {
                 match uninstall_plugin(id) {
                     Ok(msg) => ok_json(&msg),
-                    Err(e) => ("400 Bad Request", "application/json; charset=utf-8", err_json(&e)),
+                    Err(e) => (
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        err_json(&e),
+                    ),
                 }
             }
         }
         // 纯净卸载 dsh（不动壳）：keepData=0 → 连 %USERPROFILE%\.dsh 一起删（默认保数据）；
         // cleanShim=1 → 连 PATH 残留 shim 一起删（默认不删）。同步执行，返回完整卸载报告。
         // 注意：前端会带 query（?keepData=…&cleanShim=…），必须 starts_with 匹配而非精确匹配。
-        ("POST", path) if path == "/api/dsh/uninstall" || path.starts_with("/api/dsh/uninstall?") => {
+        ("POST", path)
+            if path == "/api/dsh/uninstall" || path.starts_with("/api/dsh/uninstall?") =>
+        {
             let keep_data = query_flag(path, "keepData", true);
             let clean_shim = query_flag(path, "cleanShim", false);
             let report = crate::uninstall::run_uninstall(keep_data, clean_shim);
@@ -431,13 +490,25 @@ fn route(method: &str, path: &str, cfg: &AppConfig) -> (&'static str, &'static s
         ("POST", "/api/install/dsh") => install_json("dsh"),
         ("POST", "/api/start") => match crate::supervisor::start(cfg) {
             Ok(()) => ok_json(crate::i18n::tr("启动指令已下发", "Start command sent")),
-            Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&e)),
+            Err(e) => (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                err_json(&e),
+            ),
         },
         ("POST", "/api/stop") => match crate::supervisor::stop() {
             Ok(()) => ok_json(crate::i18n::tr("关闭指令已下发", "Stop command sent")),
-            Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", err_json(&e)),
+            Err(e) => (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                err_json(&e),
+            ),
         },
-        _ => ("404 Not Found", "text/plain; charset=utf-8", "not found".to_string()),
+        _ => (
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found".to_string(),
+        ),
     }
 }
 
@@ -446,9 +517,16 @@ fn install_json(kind: &str) -> (&'static str, &'static str, String) {
         Ok(()) => ok_json(&format!(
             "{} {kind}（{}）",
             crate::i18n::tr("已触发安装", "Install triggered for"),
-            crate::i18n::tr("异步进行，稍后刷新查看结果", "running asynchronously; refresh to see the result")
+            crate::i18n::tr(
+                "异步进行，稍后刷新查看结果",
+                "running asynchronously; refresh to see the result"
+            )
         )),
-        Err(e) => ("409 Conflict", "application/json; charset=utf-8", err_json(&e)),
+        Err(e) => (
+            "409 Conflict",
+            "application/json; charset=utf-8",
+            err_json(&e),
+        ),
     }
 }
 
@@ -475,7 +553,11 @@ fn parse_bundles(profile_dir: &Path) -> Vec<String> {
     };
     v["dsh"]["profile"]["bundles"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -642,7 +724,10 @@ fn install_plugin(src: Option<&str>, id: Option<&str>) -> Result<(), String> {
 /// 核心 bundle（dsh-base / dsh-web-app）禁止卸载——卸了引擎就废了。
 fn uninstall_plugin(id: &str) -> Result<String, String> {
     let dir = profile_dir();
-    if parse_patches(&dir).iter().any(|p| p["id"].as_str() == Some(id)) {
+    if parse_patches(&dir)
+        .iter()
+        .any(|p| p["id"].as_str() == Some(id))
+    {
         return uninstall_patch(&dir, id);
     }
     if parse_bundles(&dir).iter().any(|b| b == id) {
@@ -707,9 +792,9 @@ fn uninstall_patch(dir: &Path, target: &str) -> Result<String, String> {
     let bak = path.with_extension("patch.yml.bak");
     let _ = std::fs::copy(&path, &bak);
     // 已无有效条目 → 写注释空 patch（保持合法 YAML，dsh 读作空 overlay）
-    let has_entry = out
-        .iter()
-        .any(|l| l.trim_start().starts_with("- insert:") || l.trim_start().starts_with("- replace:"));
+    let has_entry = out.iter().any(|l| {
+        l.trim_start().starts_with("- insert:") || l.trim_start().starts_with("- replace:")
+    });
     let new_content = if has_entry {
         out.join("\n") + "\n"
     } else {
@@ -742,7 +827,10 @@ fn uninstall_bundle(id: &str) -> Result<String, String> {
             if out.status.success() {
                 Ok(format!("已卸载 bundle「{id}」（重启引擎后生效）。{tail}"))
             } else {
-                Err(format!("卸载 {id} 失败（退出码 {:?}）。{tail}", out.status.code()))
+                Err(format!(
+                    "卸载 {id} 失败（退出码 {:?}）。{tail}",
+                    out.status.code()
+                ))
             }
         }
         None => Err(format!("卸载 {id} 超时（120 秒）")),
@@ -820,16 +908,44 @@ mod tests {
 
     #[test]
     fn query_flag_parses() {
-        assert!(query_flag("/api/dsh/uninstall?cleanShim=1", "cleanShim", false));
-        assert!(query_flag("/api/dsh/uninstall?keepData=0&cleanShim=1", "cleanShim", false));
-        assert!(!query_flag("/api/dsh/uninstall?keepData=0", "keepData", true));
-        assert!(!query_flag("/api/dsh/uninstall?cleanShim=0", "cleanShim", true));
+        assert!(query_flag(
+            "/api/dsh/uninstall?cleanShim=1",
+            "cleanShim",
+            false
+        ));
+        assert!(query_flag(
+            "/api/dsh/uninstall?keepData=0&cleanShim=1",
+            "cleanShim",
+            false
+        ));
+        assert!(!query_flag(
+            "/api/dsh/uninstall?keepData=0",
+            "keepData",
+            true
+        ));
+        assert!(!query_flag(
+            "/api/dsh/uninstall?cleanShim=0",
+            "cleanShim",
+            true
+        ));
         // 缺失 → 默认值
         assert!(query_flag("/api/dsh/uninstall", "keepData", true));
-        assert!(!query_flag("/api/dsh/uninstall?keepData=1", "cleanShim", false));
+        assert!(!query_flag(
+            "/api/dsh/uninstall?keepData=1",
+            "cleanShim",
+            false
+        ));
         // 非法值 → 默认值
-        assert!(query_flag("/api/dsh/uninstall?keepData=maybe", "keepData", true));
-        assert!(!query_flag("/api/dsh/uninstall?cleanShim=maybe", "cleanShim", false));
+        assert!(query_flag(
+            "/api/dsh/uninstall?keepData=maybe",
+            "keepData",
+            true
+        ));
+        assert!(!query_flag(
+            "/api/dsh/uninstall?cleanShim=maybe",
+            "cleanShim",
+            false
+        ));
     }
 
     /// `query_str` 读取 query 中的字符串值并做百分号解码。
@@ -850,7 +966,10 @@ mod tests {
         assert_eq!(query_str("/api/plugin/install", "src"), None);
         assert_eq!(query_str("/api/plugin/install?id=a", "src"), None);
         // 路径里的 + 不解码（宁缺勿错：+ 在路径中是合法字符）
-        assert_eq!(query_str("/api/plugin/install?src=a+b", "src").as_deref(), Some("a+b"));
+        assert_eq!(
+            query_str("/api/plugin/install?src=a+b", "src").as_deref(),
+            Some("a+b")
+        );
     }
 
     /// 防回归（2026-09-01）：2026-08-29 收敛轮把版本管理与插件管理当「日常面」删掉，
@@ -878,15 +997,15 @@ mod tests {
     fn admin_page_exposes_version_and_plugin_controls() {
         let html = admin_html();
         for id in [
-            "dshver",           // 版本状态行
-            "ver-sel",          // 版本下拉
-            "btn-upd",          // 更新到最新
-            "btn-ver-install",  // 安装所选版本
-            "pl-sel",           // 内置插件清单
-            "btn-pl-install",   // 安装所选插件
-            "pl-src",           // 本地路径输入
-            "btn-pl-src",       // 从路径安装
-            "plugins",          // 已装插件列表
+            "dshver",          // 版本状态行
+            "ver-sel",         // 版本下拉
+            "btn-upd",         // 更新到最新
+            "btn-ver-install", // 安装所选版本
+            "pl-sel",          // 内置插件清单
+            "btn-pl-install",  // 安装所选插件
+            "pl-src",          // 本地路径输入
+            "btn-pl-src",      // 从路径安装
+            "plugins",         // 已装插件列表
         ] {
             assert!(
                 html.contains(&format!("id=\"{id}\"")),
@@ -905,7 +1024,12 @@ mod tests {
             return;
         }
         let mut checked = 0;
-        for id in ["recruit-tools", "recruit-workbench", "mcp-apps-host", "workbench"] {
+        for id in [
+            "recruit-tools",
+            "recruit-workbench",
+            "mcp-apps-host",
+            "workbench",
+        ] {
             if !root.join(id).is_dir() {
                 continue;
             }
@@ -1010,7 +1134,10 @@ mod tests {
             ("origin", "http://evil.example.com:3081"),
             (CSRF_HEADER, tok.as_str()),
         ];
-        assert!(!is_same_origin_local(3081, &hdrs(&evil)), "外部 Host 必须拒绝");
+        assert!(
+            !is_same_origin_local(3081, &hdrs(&evil)),
+            "外部 Host 必须拒绝"
+        );
 
         // 混合：Origin 对但 Host 不对（代理改写场景）同样拒绝
         let mixed = [
@@ -1035,7 +1162,10 @@ mod tests {
             ("origin", "http://127.0.0.1:3081"),
             (CSRF_HEADER, "deadbeef"),
         ];
-        assert!(!is_same_origin_local(3081, &hdrs(&wrong)), "错 token 应拒绝");
+        assert!(
+            !is_same_origin_local(3081, &hdrs(&wrong)),
+            "错 token 应拒绝"
+        );
     }
 
     /// 端口不匹配（管理页实际端口与请求 Host 端口不一致）→ 拒绝。
@@ -1097,8 +1227,7 @@ mod tests {
     /// 发一个原始 HTTP 报文，返回 (状态码, 完整响应)。
     fn raw_request(port: u16, raw: &str) -> (u16, String) {
         use std::io::{Read as _, Write as _};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", port))
-            .expect("连接管理页失败");
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("连接管理页失败");
         s.write_all(raw.as_bytes()).unwrap();
         let mut buf = Vec::new();
         s.read_to_end(&mut buf).unwrap();
@@ -1133,7 +1262,10 @@ mod tests {
             "POST /api/stop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\n\r\n"
         );
         let (code, _) = raw_request(port, &evil);
-        assert_eq!(code, 403, "无 Origin/token 的跨站写请求必须 403，实际 {code}");
+        assert_eq!(
+            code, 403,
+            "无 Origin/token 的跨站写请求必须 403，实际 {code}"
+        );
 
         // 2) DNS rebinding：Host 是攻击者域名
         let rebound = format!(
@@ -1175,7 +1307,11 @@ mod tests {
         let mut buf = Vec::new();
         s.read_to_end(&mut buf).unwrap();
         let text = String::from_utf8_lossy(&buf).into_owned();
-        let code: u16 = text.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        let code: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
         assert_eq!(code, 200, "分片请求应被完整读取并正常处理，实际 {code}");
 
         set_admin_port(None);

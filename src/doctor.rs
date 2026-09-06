@@ -213,7 +213,10 @@ fn probe_hlp_plugin(out: &mut Vec<Finding>) {
         out.push(Finding {
             id: "hlp-plugin-missing",
             title: "HLP 插件未安装（LocalApp 生态不可用）".to_string(),
-            evidence: format!("{} 不存在；dsh-come 附带的 LocalApp 生态需要它", dir.display()),
+            evidence: format!(
+                "{} 不存在；dsh-come 附带的 LocalApp 生态需要它",
+                dir.display()
+            ),
             blast: Blast::Green,
             remedy: Some(Remedy::RepairHlpPlugin),
         });
@@ -223,7 +226,10 @@ fn probe_hlp_plugin(out: &mut Vec<Finding>) {
         out.push(Finding {
             id: "hlp-plugin-corrupt",
             title: "HLP 插件目录损坏（manifest/入口/业务 Server 缺失）".to_string(),
-            evidence: format!("{} 存在但结构不完整，MCP Server 或插件加载会失败", dir.display()),
+            evidence: format!(
+                "{} 存在但结构不完整，MCP Server 或插件加载会失败",
+                dir.display()
+            ),
             blast: Blast::Green,
             remedy: Some(Remedy::RepairHlpPlugin),
         });
@@ -236,7 +242,9 @@ fn probe_runner(out: &mut Vec<Finding>) {
         out.push(Finding {
             id: "no-runner",
             title: "未找到系统 dsh".to_string(),
-            evidence: "PATH 中无 dsh 命令。无法 spawn dsh 引擎，请先安装（管理页/向导会自动安装）。".to_string(),
+            evidence:
+                "PATH 中无 dsh 命令。无法 spawn dsh 引擎，请先安装（管理页/向导会自动安装）。"
+                    .to_string(),
             blast: Blast::Red,
             remedy: None, // 需要用户安装 Node.js / dsh，诊疗无法代装
         });
@@ -253,8 +261,14 @@ fn probe_port(cfg: &AppConfig, out: &mut Vec<Finding>) {
         if crate::supervisor::http_ok(cfg.port, 1000) {
             out.push(Finding {
                 id: "port-healthy-claimed",
-                title: format!("端口 {} 已有健康 dsh 运行（pid={}），将接管而非重复启动", cfg.port, pid),
-                evidence: format!("HTTP 200 且端口探测显示 127.0.0.1:{} 被 PID {pid} 监听", cfg.port),
+                title: format!(
+                    "端口 {} 已有健康 dsh 运行（pid={}），将接管而非重复启动",
+                    cfg.port, pid
+                ),
+                evidence: format!(
+                    "HTTP 200 且端口探测显示 127.0.0.1:{} 被 PID {pid} 监听",
+                    cfg.port
+                ),
                 blast: Blast::Green,
                 remedy: None, // start() 的认领逻辑处理，无需处置
             });
@@ -288,7 +302,10 @@ fn probe_come_patch(out: &mut Vec<Finding>) {
             out.push(Finding {
                 id: "come-patch-corrupt",
                 title: "壳 patch 文件 come.patch.yml 内容异常".to_string(),
-                evidence: format!("{} 存在但结构不像合法 patch 列表，可能被截断/损坏", p.display()),
+                evidence: format!(
+                    "{} 存在但结构不像合法 patch 列表，可能被截断/损坏",
+                    p.display()
+                ),
                 blast: Blast::Green,
                 remedy: Some(Remedy::EnsureComePatch),
             });
@@ -320,7 +337,10 @@ fn probe_profile_patch(out: &mut Vec<Finding>) {
         out.push(Finding {
             id: "profile-patch-corrupt",
             title: "cordis.patch.yml 损坏，无法解析为合法 patch 列表".to_string(),
-            evidence: format!("{} 结构异常（顶层出现非列表项），dsh 加载时会整树失败", p.display()),
+            evidence: format!(
+                "{} 结构异常（顶层出现非列表项），dsh 加载时会整树失败",
+                p.display()
+            ),
             blast: Blast::Red,
             remedy: Some(Remedy::BackupAndResetProfilePatch),
         });
@@ -400,8 +420,14 @@ fn probe_orphan_processes(cfg: &AppConfig, out: &mut Vec<Finding>) {
     if !port_related.is_empty() {
         out.push(Finding {
             id: "orphan-processes",
-            title: format!("发现 {} 个孤儿 dsh/node 进程（占着本端口）", port_related.len()),
-            evidence: format!("PID {:?} 命令行含端口 {}，可能是上次崩溃残留，会阻止 dsh 绑定端口", port_related, cfg.port),
+            title: format!(
+                "发现 {} 个孤儿 dsh/node 进程（占着本端口）",
+                port_related.len()
+            ),
+            evidence: format!(
+                "PID {:?} 命令行含端口 {}，可能是上次崩溃残留，会阻止 dsh 绑定端口",
+                port_related, cfg.port
+            ),
             blast: Blast::Yellow,
             remedy: Some(Remedy::KillOrphan { pids: port_related }),
         });
@@ -409,8 +435,14 @@ fn probe_orphan_processes(cfg: &AppConfig, out: &mut Vec<Finding>) {
     if !suspect.is_empty() {
         out.push(Finding {
             id: "orphan-processes-suspect",
-            title: format!("发现 {} 个疑似 dsh 进程（无端口证据，可能是其他 dsh 实例）", suspect.len()),
-            evidence: format!("PID {:?} 命令行含 dsh 但不含本端口，结束前请确认不是正在使用的实例", suspect),
+            title: format!(
+                "发现 {} 个疑似 dsh 进程（无端口证据，可能是其他 dsh 实例）",
+                suspect.len()
+            ),
+            evidence: format!(
+                "PID {:?} 命令行含 dsh 但不含本端口，结束前请确认不是正在使用的实例",
+                suspect
+            ),
             blast: Blast::Red,
             remedy: Some(Remedy::KillOrphan { pids: suspect }),
         });
@@ -468,18 +500,17 @@ fn apply_remedy(r: &Remedy) -> Result<String, String> {
                 .ok_or_else(|| format!("在 {} 中未找到条目 {entry_id}", p.display()))?;
             backup(&p)?;
             std::fs::write(&p, new_text).map_err(|e| e.to_string())?;
-            Ok(format!("已从 cordis.patch.yml 移除孤儿条目 `{entry_id}`（原文件已备份为 .bak）"))
+            Ok(format!(
+                "已从 cordis.patch.yml 移除孤儿条目 `{entry_id}`（原文件已备份为 .bak）"
+            ))
         }
         Remedy::BackupAndResetProfilePatch => {
             let p = profile_patch_path();
             if p.exists() {
                 backup(&p)?;
             }
-            std::fs::write(
-                &p,
-                "# 由 dsh-come 急救重置（原文件已备份为 .bak）\n[]\n",
-            )
-            .map_err(|e| e.to_string())?;
+            std::fs::write(&p, "# 由 dsh-come 急救重置（原文件已备份为 .bak）\n[]\n")
+                .map_err(|e| e.to_string())?;
             Ok("已备份并重置 cordis.patch.yml 为最小可用（空列表）".to_string())
         }
         Remedy::CleanPartialDownloads { paths } => {
@@ -591,7 +622,9 @@ fn scan_named(dir: &Path, name: &str, max_depth: usize) -> Option<PathBuf> {
         if depth == 0 || out.is_some() {
             return;
         }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if e.file_name() == name && p.is_file() {
@@ -617,7 +650,9 @@ fn backup(p: &Path) -> Result<(), String> {
         return Ok(());
     }
     let bak = p.with_extension("bak");
-    std::fs::copy(p, &bak).map(|_| ()).map_err(|e| format!("备份 {} 失败：{e}", p.display()))
+    std::fs::copy(p, &bak)
+        .map(|_| ())
+        .map_err(|e| format!("备份 {} 失败：{e}", p.display()))
 }
 
 fn kill_pid(pid: u32) -> Result<(), String> {
@@ -815,7 +850,9 @@ fn ps_table() -> Vec<(u32, u32, String, String)> {
             "powershell -NoProfile -NonInteractive -Command \
              \"Get-CimInstance Win32_Process | ForEach-Object { \\\"$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)|$($_.CommandLine)\\\" }\"",
         );
-        let Some(out) = capture(cmd) else { return vec![] };
+        let Some(out) = capture(cmd) else {
+            return vec![];
+        };
         let mut res = Vec::new();
         for line in out.lines() {
             let mut f = line.splitn(4, '|');
@@ -839,7 +876,9 @@ fn ps_table() -> Vec<(u32, u32, String, String)> {
     {
         let mut cmd = Command::new("ps");
         cmd.args(["-axo", "pid,ppid,comm,command"]);
-        let Some(out) = capture(cmd) else { return vec![] };
+        let Some(out) = capture(cmd) else {
+            return vec![];
+        };
         let mut res = Vec::new();
         for line in out.lines() {
             let f: Vec<&str> = line.split_whitespace().collect();
@@ -1017,7 +1056,9 @@ fn collect_junk(root: &Path, max: usize) -> Vec<PathBuf> {
         if depth == 0 || out.len() >= max {
             return;
         }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
@@ -1111,12 +1152,20 @@ mod tests {
             "LISTEN + 端口 3080 应命中 inode"
         );
         assert_eq!(tcp_line_inode(listen_3080, "0C09"), None, "端口不符应跳过");
-        assert_eq!(tcp_line_inode(listen_3080, "0c08").as_deref(), Some("123456"), "端口 hex 大小写不敏感");
+        assert_eq!(
+            tcp_line_inode(listen_3080, "0c08").as_deref(),
+            Some("123456"),
+            "端口 hex 大小写不敏感"
+        );
 
         // st = 01（ESTABLISHED）不是 LISTEN
         let established =
             "   1: 0100007F:0C08 0100007F:1F90 01 00000000:00000000 00:00000000 00000000     0        0 654321 1 4";
-        assert_eq!(tcp_line_inode(established, "0C08"), None, "非 LISTEN 不应命中");
+        assert_eq!(
+            tcp_line_inode(established, "0C08"),
+            None,
+            "非 LISTEN 不应命中"
+        );
 
         // 表头行
         assert_eq!(tcp_line_inode("  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode", "0C08"), None);

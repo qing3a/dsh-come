@@ -15,10 +15,10 @@
 use crate::config::AppConfig;
 use crate::runtime;
 use std::io::Write;
+use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 /// 引擎状态（托盘状态行读取）
@@ -209,7 +209,11 @@ pub fn hide_window(_cmd: &mut std::process::Command) {}
 /// 返回 None = 启动失败或超时被杀（调用方自行降级，绝不能阻塞）。
 pub fn capture_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
     use std::io::Read;
-    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
     // 独立线程读管道：子进程输出超过管道缓冲（64KB）时不至于互相堵死
     let th_out = child.stdout.take().map(|mut s| {
         std::thread::spawn(move || {
@@ -231,7 +235,11 @@ pub fn capture_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::proc
             Ok(Some(status)) => {
                 let stdout = th_out.and_then(|h| h.join().ok()).unwrap_or_default();
                 let stderr = th_err.and_then(|h| h.join().ok()).unwrap_or_default();
-                return Some(std::process::Output { status, stdout, stderr });
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
@@ -274,7 +282,11 @@ fn append_log(line: &str) {
             }
         }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "[{}] {line}", chrono::Local::now().format("%H:%M:%S"));
         // 记录最近写入时刻：心跳检测（heartbeat_if_silent）据此判断「日志静默」
         LAST_LOG_AT.store(unix_secs(), Ordering::Relaxed);
@@ -292,10 +304,7 @@ fn http_ok_path(port: u16, timeout_ms: u64, path: &str) -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    match client
-        .get(format!("http://127.0.0.1:{port}{path}"))
-        .send()
-    {
+    match client.get(format!("http://127.0.0.1:{port}{path}")).send() {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }
@@ -360,7 +369,8 @@ fn build_command(cfg: &AppConfig) -> Result<Command, String> {
     // 非 TTY（被重定向进 engine.log）时 npm 静默抑制进度条 → 用 npm_config_loglevel=http
     // 让 npm 每发一个 HTTP 请求打一行（npm http fetch GET 200 …），engine.log 有持续的
     // 「活着」信号；FORCE_COLOR=0 去 ANSI 颜色码。
-    cmd.env("npm_config_loglevel", "http").env("FORCE_COLOR", "0");
+    cmd.env("npm_config_loglevel", "http")
+        .env("FORCE_COLOR", "0");
     // Unix：独立进程组（引擎+node 后代同一组），杀树 kill -pgid 覆盖整树
     start_process_group(&mut cmd);
     hide_window(&mut cmd);
@@ -415,14 +425,20 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
         return Ok(()); // 已在跑，幂等
     }
     let home = runtime::system_home_dir();
-    let runner_desc = runtime::dsh_runner().map(|r| r.describe()).unwrap_or_else(|| "（无）".to_string());
+    let runner_desc = runtime::dsh_runner()
+        .map(|r| r.describe())
+        .unwrap_or_else(|| "（无）".to_string());
     let mut command = build_command(cfg)?;
     // stdout/stderr 进滚动日志（管道不读会写满阻塞子进程——md-agent 踩坑）
     let log_path = runtime::engine_log();
     if let Some(dir) = log_path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
         command.stdout(Stdio::from(f.try_clone().map_err(|e| e.to_string())?));
         command.stderr(Stdio::from(f));
     } else {
@@ -443,7 +459,9 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
     // Unix：记录进程组根 pid 供 kill_tree（kill -pgid）整树清理。
     #[cfg(target_os = "windows")]
     if !crate::job::assign_child(pid) {
-        append_log("⚠️ 引擎未纳入 Job Object（降级 taskkill /T；崩溃自愈仍可工作，但崩溃兜底稍弱）");
+        append_log(
+            "⚠️ 引擎未纳入 Job Object（降级 taskkill /T；崩溃自愈仍可工作，但崩溃兜底稍弱）",
+        );
     }
     #[cfg(not(target_os = "windows"))]
     crate::job::record_engine_pid(pid);
@@ -469,7 +487,10 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
     drop(st); // 释放锁再起后台线程
 
     let ver = runtime::resolved_version(cfg).unwrap_or_else(|| "系统 dsh".to_string());
-    append_log(&format!("dsh 引擎启动 pid={pid} port={} ver={ver}（{runner_desc}）", cfg.port));
+    append_log(&format!(
+        "dsh 引擎启动 pid={pid} port={} ver={ver}（{runner_desc}）",
+        cfg.port
+    ));
     ensure_monitor(cfg.clone());
 
     // 就绪探测线程：HTTP 200 后置 ready（托盘状态行 /「打开界面」使能）；清除阶段提示。
@@ -499,7 +520,9 @@ pub fn start(cfg: &AppConfig) -> Result<(), String> {
         let msg = if ready_ok {
             format!("界面就绪: http://127.0.0.1:{p}")
         } else {
-            format!("启动超时（{startup_timeout}s 内未见 HTTP 200），端口 {p} — 向导将显示失败并重试")
+            format!(
+                "启动超时（{startup_timeout}s 内未见 HTTP 200），端口 {p} — 向导将显示失败并重试"
+            )
         };
         append_log(&msg);
     });
@@ -568,7 +591,9 @@ pub fn read_state_json() -> String {
     let p = runtime::state_path();
     match std::fs::read_to_string(&p) {
         Ok(s) => s,
-        Err(_) => "{\"running\":false,\"message\":\"状态文件暂不可用（守护刚启动？）\"}".to_string(),
+        Err(_) => {
+            "{\"running\":false,\"message\":\"状态文件暂不可用（守护刚启动？）\"}".to_string()
+        }
     }
 }
 
@@ -645,10 +670,7 @@ fn ensure_monitor(cfg: AppConfig) {
                 Ok(s) => s,
                 Err(e) => e.into_inner(),
             };
-            let exit = st
-                .child
-                .as_mut()
-                .and_then(|c| c.try_wait().ok().flatten());
+            let exit = st.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
             match exit {
                 Some(code) => {
                     // 子进程已退出
@@ -677,7 +699,10 @@ fn ensure_monitor(cfg: AppConfig) {
                             if n == 1 {
                                 crate::notify::toast(
                                     crate::i18n::tr("DSH 伴侣", "DSH Companion"),
-                                    crate::i18n::tr("引擎已崩溃，正在自动重启…", "Engine crashed; restarting automatically…"),
+                                    crate::i18n::tr(
+                                        "引擎已崩溃，正在自动重启…",
+                                        "Engine crashed; restarting automatically…",
+                                    ),
                                 );
                             }
                             // catch_unwind：heal/start 万一 panic，监控线程不能静默死掉——
@@ -715,7 +740,8 @@ fn ensure_monitor(cfg: AppConfig) {
                             // 重新取锁，标记放弃（锁中毒则恢复继续）
                             if let Ok(mut s2) = state().lock() {
                                 let n = s2.status.restarts;
-                                let m = format!("连续崩溃 {n} 次，急救兜底后仍失败（详见 engine.log）");
+                                let m =
+                                    format!("连续崩溃 {n} 次，急救兜底后仍失败（详见 engine.log）");
                                 s2.status.last_error = Some(m.clone());
                                 append_log(&m);
                             }
@@ -730,7 +756,10 @@ fn ensure_monitor(cfg: AppConfig) {
                                 &format!(
                                     "{} {n} {}",
                                     crate::i18n::tr("引擎连续崩溃", "Engine crashed"),
-                                    crate::i18n::tr("次，已停止自动重启", "times; auto-restart disabled")
+                                    crate::i18n::tr(
+                                        "次，已停止自动重启",
+                                        "times; auto-restart disabled"
+                                    )
                                 ),
                             );
                         }
@@ -743,7 +772,9 @@ fn ensure_monitor(cfg: AppConfig) {
                         // 认领的外部 dsh（无 child 句柄，try_wait 恒 None）：周期探活。
                         // 判定死亡 → 状态降级为已停止（不自动重启——外部进程不归本壳管；
                         // 用户可手动「重启引擎」，start() 的 spawn 分支会自起 owned 实例）。
-                        if st.last_adopt_probe.elapsed() >= Duration::from_secs(ADOPT_PROBE_INTERVAL_SECS) {
+                        if st.last_adopt_probe.elapsed()
+                            >= Duration::from_secs(ADOPT_PROBE_INTERVAL_SECS)
+                        {
                             let port = st.status.port;
                             let claimed = st.status.pid.unwrap_or(0);
                             st.last_adopt_probe = std::time::Instant::now();
@@ -756,13 +787,16 @@ fn ensure_monitor(cfg: AppConfig) {
                                 Ok(s) => s,
                                 Err(e) => e.into_inner(),
                             };
-                            let (misses, verdict) = adopt_probe(st.adopt_misses, port_ok, listener, claimed);
+                            let (misses, verdict) =
+                                adopt_probe(st.adopt_misses, port_ok, listener, claimed);
                             st.adopt_misses = misses;
                             match verdict {
                                 AdoptProbe::Alive => {}
                                 AdoptProbe::UpdatePid => {
                                     st.status.pid = listener;
-                                    append_log(&format!("认领的 dsh 端口换主人（新 pid={listener:?}），已更新认领"));
+                                    append_log(&format!(
+                                        "认领的 dsh 端口换主人（新 pid={listener:?}），已更新认领"
+                                    ));
                                 }
                                 AdoptProbe::Dead => {
                                     // 外部 dsh 已死：不再只降级——自动接管，spawn 一个 owned 实例，
@@ -801,7 +835,9 @@ fn ensure_monitor(cfg: AppConfig) {
                         // 自有引擎页面级守护：已就绪才探测（启动期不探，避免误杀冷启动/重启中的引擎）。
                         // 三段式：首次失败提示（托盘状态行「界面无响应」）→ 连续失败累积 →
                         // 判死杀进程树，让下一轮 try_wait 看到退出 → 走既有「崩溃→退避重启+诊疗升级」链路。
-                        if st.last_page_probe.elapsed() >= Duration::from_secs(PAGE_PROBE_INTERVAL_SECS) {
+                        if st.last_page_probe.elapsed()
+                            >= Duration::from_secs(PAGE_PROBE_INTERVAL_SECS)
+                        {
                             let port = st.status.port;
                             st.last_page_probe = std::time::Instant::now();
                             // 释放锁再 HTTP 探测（同上：探活绝不在持锁状态下做）
@@ -836,7 +872,9 @@ fn ensure_monitor(cfg: AppConfig) {
                                     ));
                                 }
                                 PageProbe::Dead => {
-                                    append_log("页面探活连续失败，判定界面无响应，杀进程走重启链路");
+                                    append_log(
+                                        "页面探活连续失败，判定界面无响应，杀进程走重启链路",
+                                    );
                                     // 自有引擎在作业内 → 优先 terminate_job；作业不可用降级 taskkill
                                     if !crate::job::terminate_job() {
                                         if let Some(pid) = st.status.pid {
@@ -849,7 +887,9 @@ fn ensure_monitor(cfg: AppConfig) {
                         }
                     } else {
                         // 子进程存活：连续运行超健康期 → 重启预算清零（避免一次健康运行前的旧崩溃计数累加）
-                        if st.status.restarts > 0 && st.last_start.elapsed() > Duration::from_secs(HEALTHY_RESET_SECS) {
+                        if st.status.restarts > 0
+                            && st.last_start.elapsed() > Duration::from_secs(HEALTHY_RESET_SECS)
+                        {
                             st.status.restarts = 0;
                             st.status.last_error = None;
                             append_log("连续运行超健康期，重启预算已清零");
@@ -887,9 +927,23 @@ fn adopt_probe(
     let miss = misses + 1;
     let dead = miss >= ADOPT_PROBE_MISS_LIMIT;
     match listener {
-        Some(p) if p == claimed_pid => (miss, if dead { AdoptProbe::Dead } else { AdoptProbe::Alive }),
+        Some(p) if p == claimed_pid => (
+            miss,
+            if dead {
+                AdoptProbe::Dead
+            } else {
+                AdoptProbe::Alive
+            },
+        ),
         Some(_) => (0, AdoptProbe::UpdatePid),
-        None => (miss, if dead { AdoptProbe::Dead } else { AdoptProbe::Alive }),
+        None => (
+            miss,
+            if dead {
+                AdoptProbe::Dead
+            } else {
+                AdoptProbe::Alive
+            },
+        ),
     }
 }
 
@@ -1109,9 +1163,15 @@ mod tests {
         assert_eq!(adopt_probe(2, true, None, 100), (0, AdoptProbe::Alive));
         assert_eq!(adopt_probe(2, true, Some(100), 100), (0, AdoptProbe::Alive));
         // 端口换主人 → UpdatePid，计数清零
-        assert_eq!(adopt_probe(1, false, Some(200), 100), (0, AdoptProbe::UpdatePid));
+        assert_eq!(
+            adopt_probe(1, false, Some(200), 100),
+            (0, AdoptProbe::UpdatePid)
+        );
         // 原 pid 还在但 HTTP 不 200 → 累积；超限判死
-        assert_eq!(adopt_probe(0, false, Some(100), 100), (1, AdoptProbe::Alive));
+        assert_eq!(
+            adopt_probe(0, false, Some(100), 100),
+            (1, AdoptProbe::Alive)
+        );
         assert_eq!(adopt_probe(2, false, Some(100), 100), (3, AdoptProbe::Dead));
         // 端口无人监听 → 累积；超限判死
         assert_eq!(adopt_probe(0, false, None, 100), (1, AdoptProbe::Alive));
@@ -1142,7 +1202,10 @@ mod tests {
         let pairs = [(2u32, 1u32), (3, 2), (4, 3), (5, 1), (9, 8)];
         let got = bfs_descendants(&pairs, 1);
         for expect in [2, 3, 4, 5] {
-            assert!(got.contains(&expect), "后代 {expect} 应被收集，实际 {got:?}");
+            assert!(
+                got.contains(&expect),
+                "后代 {expect} 应被收集，实际 {got:?}"
+            );
         }
         assert!(!got.contains(&9), "不属于 root 子树的进程不应被收集");
         assert!(!got.contains(&1), "root 自身不算后代");
@@ -1165,6 +1228,9 @@ mod tests {
     #[test]
     fn bfs_descendants_handles_empty_and_unrelated() {
         assert!(bfs_descendants(&[], 1).is_empty(), "空快照应返回空");
-        assert!(bfs_descendants(&[(2, 1)], 99).is_empty(), "无关 root 应返回空");
+        assert!(
+            bfs_descendants(&[(2, 1)], 99).is_empty(),
+            "无关 root 应返回空"
+        );
     }
 }

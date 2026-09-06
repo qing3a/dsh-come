@@ -79,10 +79,13 @@ fn legacy_root_dir() -> Option<PathBuf> {
 /// Windows 由进程级 named mutex 天然防双开（与路径无关），无需此探测。
 #[cfg(unix)]
 pub fn legacy_daemon_running() -> bool {
-    if std::env::var_os("DSH_COME_HOME").is_some() || std::env::var_os("DSH_DESKTOP_HOME").is_some() {
+    if std::env::var_os("DSH_COME_HOME").is_some() || std::env::var_os("DSH_DESKTOP_HOME").is_some()
+    {
         return false; // 显式指路：不迁移也就无所谓旧守护
     }
-    let Some(old_root) = legacy_root_dir() else { return false };
+    let Some(old_root) = legacy_root_dir() else {
+        return false;
+    };
     old_root.is_dir() && !try_lock_file(&old_root.join("dsh-come.lock"))
 }
 
@@ -119,11 +122,14 @@ fn try_lock_file(p: &std::path::Path) -> bool {
 /// 迁移 = 同卷 `rename`（原子、快）。rename 失败只记日志跳过（下次启动重试），
 /// **绝不 copy**——rename 失败基本意味着目录被占用或权限问题，copy 半写状态比不迁更糟。
 pub fn migrate_legacy_dir() {
-    if std::env::var_os("DSH_COME_HOME").is_some() || std::env::var_os("DSH_DESKTOP_HOME").is_some() {
+    if std::env::var_os("DSH_COME_HOME").is_some() || std::env::var_os("DSH_DESKTOP_HOME").is_some()
+    {
         return; // 显式指路：不迁移
     }
     let new_root = root_dir();
-    let Some(old_root) = legacy_root_dir() else { return };
+    let Some(old_root) = legacy_root_dir() else {
+        return;
+    };
     if !old_root.is_dir() || new_root.exists() {
         return; // 没有旧目录 / 新目录已存在 → 无事可做
     }
@@ -141,9 +147,7 @@ pub fn migrate_legacy_dir() {
             old_root.display(),
             new_root.display()
         )),
-        Err(e) => crate::supervisor::log(&format!(
-            "旧数据目录迁移失败（跳过，下次启动重试）：{e}"
-        )),
+        Err(e) => crate::supervisor::log(&format!("旧数据目录迁移失败（跳过，下次启动重试）：{e}")),
     }
 }
 
@@ -324,7 +328,10 @@ mod tests {
     #[test]
     fn dsh_command_direct_shape() {
         let cmd = dsh_command(&DshRunner(PathBuf::from("dsh")), &["web".to_string()]);
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         #[cfg(target_os = "windows")]
         {
             assert!(args.iter().any(|a| a == "dsh"), "直启 dsh: {args:?}");
@@ -332,11 +339,17 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         {
             // 直启形态：无 cmd /C 包装
-            assert!(!args.iter().any(|a| a == "/C"), "Unix 不应有 cmd /C: {args:?}");
+            assert!(
+                !args.iter().any(|a| a == "/C"),
+                "Unix 不应有 cmd /C: {args:?}"
+            );
             assert!(args.iter().any(|a| a == "web"), "透传 web: {args:?}");
         }
         assert!(args.iter().any(|a| a == "web"), "透传 web: {args:?}");
-        assert!(!args.iter().any(|a| a.starts_with("@deepseek-ai")), "无 npm 包名: {args:?}");
+        assert!(
+            !args.iter().any(|a| a.starts_with("@deepseek-ai")),
+            "无 npm 包名: {args:?}"
+        );
     }
 
     /// 测试专用：独立的临时 DSH_COME_HOME（串行测试下 set_var 安全）
@@ -365,12 +378,24 @@ mod tests {
         ensure_come_patch().unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(content.contains("dsh-market"), "原条目保留");
-        assert!(content.contains("- insert:"), "HLP 条目用 insert 结构（新增插件语义）");
+        assert!(
+            content.contains("- insert:"),
+            "HLP 条目用 insert 结构（新增插件语义）"
+        );
         assert!(content.contains("- id: dsh-light-cockpit"), "追加 HLP 条目");
-        assert!(content.contains("name: '@hlp/dsh-light-cockpit'"), "HLP 条目用 npm 包名（共享层解析）");
-        assert!(content.contains("mcp-client-mail"), "mail MCP 桥条目（@好友业务工具）");
+        assert!(
+            content.contains("name: '@hlp/dsh-light-cockpit'"),
+            "HLP 条目用 npm 包名（共享层解析）"
+        );
+        assert!(
+            content.contains("mcp-client-mail"),
+            "mail MCP 桥条目（@好友业务工具）"
+        );
         assert!(content.contains("mcp-client-biz"), "biz MCP 桥条目");
-        assert!(content.contains("/business/mail-collab-server"), "MCP server 指共享层插件内 business 路径");
+        assert!(
+            content.contains("/business/mail-collab-server"),
+            "MCP server 指共享层插件内 business 路径"
+        );
         std::fs::remove_dir_all(&home).ok();
 
         // 场景 2：已有 HLP 条目 → 幂等跳过（不重复追加）
@@ -390,13 +415,28 @@ mod tests {
         let home = test_home("deploy");
         let dsh_home = home.join("dsh");
         std::env::set_var("DSH_HOME", &dsh_home);
-        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let src = exe_dir.join("hlp-plugin");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("package.json"), r#"{"name":"@hlp/dsh-light-cockpit","version":"0.0.2"}"#).unwrap();
+        std::fs::write(
+            src.join("package.json"),
+            r#"{"name":"@hlp/dsh-light-cockpit","version":"0.0.2"}"#,
+        )
+        .unwrap();
         assert!(ensure_hlp_plugin().unwrap(), "应从源部署");
-        let dst = dsh_home.join("profiles").join("node_modules").join("@hlp").join("dsh-light-cockpit");
-        assert!(dst.join("package.json").is_file(), "部署后 manifest 存在于共享层");
+        let dst = dsh_home
+            .join("profiles")
+            .join("node_modules")
+            .join("@hlp")
+            .join("dsh-light-cockpit");
+        assert!(
+            dst.join("package.json").is_file(),
+            "部署后 manifest 存在于共享层"
+        );
         assert!(!ensure_hlp_plugin().unwrap(), "第二次应幂等跳过");
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&src).ok();
@@ -422,7 +462,10 @@ mod tests {
         assert!(migrate_dir(&old, &new).is_ok());
         assert!(!old.exists(), "旧目录应消失");
         assert!(new.join("state.json").is_file(), "文件应随目录迁走");
-        assert!(new.join("logs").join("engine.log").is_file(), "子目录应完整迁移");
+        assert!(
+            new.join("logs").join("engine.log").is_file(),
+            "子目录应完整迁移"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

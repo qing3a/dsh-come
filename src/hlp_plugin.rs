@@ -23,8 +23,16 @@ pub fn healthy() -> bool {
     dir.join("package.json").is_file()
         && dir.join("index.js").is_file()
         && dir.join("lib").is_dir()
-        && dir.join("business").join("biz-cockpit-mcp").join("package.json").is_file()
-        && dir.join("business").join("mail-collab-server").join("package.json").is_file()
+        && dir
+            .join("business")
+            .join("biz-cockpit-mcp")
+            .join("package.json")
+            .is_file()
+        && dir
+            .join("business")
+            .join("mail-collab-server")
+            .join("package.json")
+            .is_file()
 }
 
 /// 安装源候选（按序）：exe 同目录 hlp-plugin\dsh-light-cockpit / hlp-plugin
@@ -97,13 +105,17 @@ pub fn repair() -> Result<String, String> {
         }
         std::fs::rename(&dir, &bak).map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
-                "备份失败：插件目录被占用（dsh 引擎运行中）——请先在管理页停止 dsh 引擎，再点修复".to_string()
+                "备份失败：插件目录被占用（dsh 引擎运行中）——请先在管理页停止 dsh 引擎，再点修复"
+                    .to_string()
             } else {
                 format!("备份失败：{e}")
             }
         })?;
         match deploy_from_source() {
-            Ok(n) => Ok(format!("修复完成（旧目录备份为 {}，复制 {n} 个文件）", bak.display())),
+            Ok(n) => Ok(format!(
+                "修复完成（旧目录备份为 {}，复制 {n} 个文件）",
+                bak.display()
+            )),
             Err(e) => {
                 // 回滚：新装失败则还原备份，绝不留半残状态
                 if !dir.exists() && bak.exists() {

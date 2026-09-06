@@ -1,0 +1,44 @@
+{
+  "name": "md-studio",
+  "version": "0.1.1",
+  "description": "可自定义工作台插件（MVP 骨架）：通用 items + 工具面/页面双通道同源 + 远程 MCP 工具自动可用",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/index.d.ts",
+    "lib/workbench.html",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').copyFileSync('src/workbench.html','lib/workbench.html')\"",
+    "prepack": "npm run build",
+    "load:dev": "dsh web --patch ./cordis.yml --host 127.0.0.1 --port 3199"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.3"
+  },
+  "license": "MIT"
+}
