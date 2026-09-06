@@ -11,8 +11,9 @@
 # 发布纪律：先手动 bump Cargo.toml 的 version（与 tag 一致，去掉 v 前缀），
 # 提交后打 tag：git tag v0.2.0 && git push origin v0.2.0
 #
-# 注意：macos-13 是最后一代 Intel runner；GitHub 若将其退役，回退为仅 arm64（macos-latest），
-# 更新 update-macos.json 指向单切片即可。
+# 注意：macos-13（Intel runner）已被 GitHub 退役（2026 起不再分配 job）。
+# macos-x64 切片改用 macos-latest（arm64）交叉编译 x86_64-apple-darwin，保留 Intel Mac 支持；
+# 若交叉编译路径失效，回退为仅 arm64（macos-latest），更新 update-macos.json 指向单切片即可。
 
 name: release
 
@@ -35,18 +36,22 @@ jobs:
             os: windows-latest
             artifact: win
             exe: target/release/dsh-come.exe
+            target: ''
           - name: macos-x64
-            os: macos-13
+            os: macos-latest
             artifact: macos-x64
-            exe: target/release/dsh-come
+            exe: target/x86_64-apple-darwin/release/dsh-come
+            target: x86_64-apple-darwin
           - name: macos-arm64
-            os: macos-14
+            os: macos-latest
             artifact: macos-arm64
             exe: target/release/dsh-come
+            target: ''
           - name: linux
             os: ubuntu-latest
             artifact: linux
             exe: target/release/dsh-come
+            target: ''
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -54,9 +59,13 @@ jobs:
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       # tray-icon 在 Linux 需 gtk3/appindicator/xdo 系统库（ubuntu-latest 不预装 -dev 包）
       - name: Install Linux system deps
@@ -67,7 +76,7 @@ jobs:
         run: cargo test
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release${{ matrix.target && format(' --target {0}', matrix.target) || '' }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
