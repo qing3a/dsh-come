@@ -8,6 +8,9 @@ on:
 
 jobs:
   hlp-plugin-check:
+    # 需要 Secret DEPLOY_SSH_KEY（可读私有仓 harness-localapp 的 SSH 私钥）；
+    # 未配置时跳过（本地发版前手动跑 node scripts/sync-hlp-plugin.mjs 同样校验）
+    if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
