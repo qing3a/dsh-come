@@ -2,7 +2,7 @@
 //!
 //! 部署位置 = DSH 共享层 `~/.dsh/profiles/node_modules/@hlp/dsh-light-cockpit`
 //! （依赖链完整，见 runtime::hlp_plugin_dir 注释）。安装源 = exe 同目录的
-//! `hlp-plugin\dsh-light-cockpit`（发行版布局）或 `hlp-plugin`（解压形态）。
+//! `hlp-plugin\dsh-light-cockpit`（安装包布局）或 `hlp-plugin`（解压形态）。
 //! 纪律：安装源缺失时报明确错误（不静默）；修复前备份 `.bak`，data/ 不在插件目录、不受影响。
 
 use crate::runtime::{copy_dir_all, hlp_plugin_dir};
@@ -71,7 +71,7 @@ pub(crate) fn deploy_from_source() -> Result<u64, String> {
         return Ok(n);
     }
     Err(format!(
-        "未找到安装源：exe 同目录应有 hlp-plugin\\dsh-light-cockpit（发行版应附带；当前 exe 目录：{}）",
+        "未找到安装源：exe 同目录应有 hlp-plugin\\dsh-light-cockpit（安装包应随附；当前 exe 目录：{}）",
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.display().to_string()))

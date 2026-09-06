@@ -514,7 +514,7 @@ pub fn come_patch_path() -> PathBuf {
 /// HLP 插件的部署目录 = DSH 共享层 `~/.dsh/profiles/node_modules/@hlp/dsh-light-cockpit`。
 /// v1.4.0 实测：patch `name: file:///<root>/plugins/...` 不可行——① Node ESM 拒绝目录导入；
 /// ② 指到 index.js 后宿主依赖（@deepseek-ai/dsh-tools 等）解析断链（只有 profiles/node_modules
-/// 下才有宿主包）。故发行版附带插件**部署进共享层**（依赖链完整），patch 用 npm 包名加载。
+/// 下才有宿主包）。故随附插件**部署进共享层**（依赖链完整），patch 用 npm 包名加载。
 /// 环境隔离：经 DSH_HOME（system_home_dir），测试可指临时目录。
 pub fn hlp_plugin_dir() -> PathBuf {
     system_home_dir()
@@ -542,7 +542,7 @@ pub(crate) fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std:
     Ok(copied)
 }
 
-/// 确保发行版附带的 HLP 插件已部署到 DSH 共享层（~/.dsh/profiles/node_modules/@hlp）。
+/// 确保随附的 HLP 插件已部署到 DSH 共享层（~/.dsh/profiles/node_modules/@hlp）。
 /// 幂等判定用 hlp_plugin::healthy（比旧版「package.json 可解析」更强：损坏态自动重装）。
 /// 部署实现单一来源 = hlp_plugin::deploy_from_source（此前 runtime 里有一份逐字相同的
 /// 候选列表+复制循环，改一处漏一处）。无可用源/复制失败 → Ok(false) 留痕不阻塞启动

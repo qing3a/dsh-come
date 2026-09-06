@@ -125,3 +125,68 @@ jobs:
             update.json
             scripts/install.sh
             scripts/install-watchdog.sh
+
+  # npm 分发：把桌面壳二进制作为平台分发包发布到 npm registry，
+  # 主包 dsh-come 通过 optionalDependencies 自动选平台，postinstall 本地就位。
+  # 需要仓库 Secret NPM_TOKEN（npmjs 账号，且为 dsh-come* 包名 owner）。
+  npm-publish:
+    name: publish npm packages
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Run installer unit tests
+        working-directory: packages/dsh-come
+        run: npm test
+
+      - name: Download platform binaries from release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p packages/dsh-come-win32-x64/bin
+          mkdir -p packages/dsh-come-darwin/bin
+          mkdir -p packages/dsh-come-linux-x64/bin
+          gh release download "${{ github.ref_name }}" \
+            --pattern 'dsh-come.exe' --dir packages/dsh-come-win32-x64/bin --clobber
+          gh release download "${{ github.ref_name }}" \
+            --pattern 'dsh-come-macos' --dir packages/dsh-come-darwin/bin --clobber
+          gh release download "${{ github.ref_name }}" \
+            --pattern 'dsh-come-linux' --dir packages/dsh-come-linux-x64/bin --clobber
+          ls -la packages/dsh-come-win32-x64/bin packages/dsh-come-darwin/bin packages/dsh-come-linux-x64/bin
+
+      - name: Align package versions with tag
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          for d in packages/dsh-come packages/dsh-come-win32-x64 packages/dsh-come-darwin packages/dsh-come-linux-x64; do
+            (cd "$d" && npm version "$VER" --no-git-tag-version --allow-same-version)
+          done
+          # 同步主包 optionalDependencies 的平台包版本引用
+          VER="$VER" node -e '
+            const fs = require("fs");
+            const p = "packages/dsh-come/package.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            for (const k of Object.keys(j.optionalDependencies || {})) {
+              j.optionalDependencies[k] = process.env.VER;
+            }
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+          echo "== aligned =="
+          for d in packages/dsh-come packages/dsh-come-win32-x64 packages/dsh-come-darwin packages/dsh-come-linux-x64; do
+            echo "$d: $(node -p "require('./$d/package.json').version")"
+          done
+
+      - name: Publish packages (platform packages first, main last)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for d in packages/dsh-come-win32-x64 packages/dsh-come-darwin packages/dsh-come-linux-x64 packages/dsh-come; do
+            (cd "$d" && npm publish --access public)
+          done

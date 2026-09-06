@@ -3,6 +3,8 @@
 dist/
 *.exe
 *.log
+# npm 安装器打包产物（发版由 CI 重新生成）
+packages/*/*.tgz
 # 本地开发：插件解析 dsh 依赖的 junction（勿提交）
 node_modules/
 # 外部 clone（dsh-tray，独立仓库管理，勿提交）

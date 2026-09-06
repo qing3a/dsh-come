@@ -1,0 +1,46 @@
+{
+  "name": "dsh-come",
+  "version": "0.2.0",
+  "description": "DSH Come 官方 npm 安装器：桌面壳二进制经 npm registry 平台分包分发（optionalDependencies 自动选平台），postinstall 本地就位，npm 升级即壳升级。",
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "harness",
+    "desktop",
+    "companion",
+    "installer"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "dsh-come": "lib/cli.js"
+  },
+  "main": "lib/cli.js",
+  "files": [
+    "lib",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "preuninstall": "node scripts/preuninstall.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "dsh-come-win32-x64": "0.2.0",
+    "dsh-come-darwin": "0.2.0",
+    "dsh-come-linux-x64": "0.2.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qing3a/dsh-come.git"
+  },
+  "homepage": "https://github.com/qing3a/dsh-come#readme",
+  "bugs": {
+    "url": "https://github.com/qing3a/dsh-come/issues"
+  }
+}

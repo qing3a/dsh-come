@@ -106,7 +106,7 @@ pub fn start(cfg: &AppConfig) {
                     return;
                 }
                 // v1.4.0 P0-2：HLP 插件（LocalApp 生态）缺失时自动安装（node → dsh → hlp 第三步）。
-                // 无发行版附带源时报错并提示管理页——不阻塞引擎启动（HLP 缺席只影响 LocalApp）。
+                // 无随附插件源时报错并提示管理页——不阻塞引擎启动（HLP 缺席只影响 LocalApp）。
                 if crate::hlp_plugin::detect_version().is_none() {
                     supervisor::log("未检测到 HLP 插件，自动安装（LocalApp 生态）…");
                     match crate::installer::spawn_task("hlp-plugin", || {
