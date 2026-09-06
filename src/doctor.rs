@@ -195,6 +195,7 @@ pub fn run_cli(cfg: &AppConfig, mode: Mode) {
 
 fn scan_all(cfg: &AppConfig) -> Vec<Finding> {
     let mut out = Vec::new();
+    probe_engine_version(&mut out);
     probe_runner(&mut out);
     probe_port(cfg, &mut out);
     probe_come_patch(&mut out);
@@ -236,6 +237,55 @@ fn probe_hlp_plugin(out: &mut Vec<Finding>) {
     }
 }
 
+/// 0) 引擎版本过期：运行中引擎的版本（state.json 快照，引擎启动时采样）≠ 磁盘 dsh
+/// 当前版本 → 「内存旧代码 + 磁盘新文件」混装风险。2026-09-06 实测：管理页更新 dsh
+/// 后引擎未重启，web 启动报 client-modules boot manifest batches must be an array。
+/// 只上报不动手（remedy=None）：重启引擎由用户在托盘/管理页执行——doctor CLI 是独立
+/// 进程，无法安全重启守护进程持有的引擎。
+fn probe_engine_version(out: &mut Vec<Finding>) {
+    // 心跳过期（守护已退出/上次会话残影）→ state.json 不作数（与 CLI status 同款判定）
+    if crate::supervisor::state_stale_secs()
+        .map(|s| s >= 10)
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let state = std::fs::read_to_string(runtime::state_path()).ok();
+    let (running, engine_ver) = state
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .map(|v| {
+            (
+                v["running"].as_bool() == Some(true),
+                v["version"].as_str().map(|s| s.to_string()),
+            )
+        })
+        .unwrap_or((false, None));
+    if !running {
+        return; // 引擎没在跑：下次启动自然加载磁盘版本，无「过期」可言
+    }
+    let Some(engine_ver) = engine_ver else {
+        return; // 引擎快照无版本（当时探测失败过）：无从比对，交给其他探测项
+    };
+    let Some(disk_ver) = runtime::dsh_version() else {
+        return; // 磁盘版本探测失败（dsh 损坏等）：probe_runner / probe_port 负责
+    };
+    if engine_ver == disk_ver {
+        return;
+    }
+    out.push(Finding {
+        id: "engine-version-stale",
+        title: "引擎运行的是旧版本 dsh（更新后未重启）".to_string(),
+        evidence: format!(
+            "运行中引擎加载的是 v{engine_ver}，磁盘已是 v{disk_ver}。旧进程内存代码 + \
+             新磁盘文件混装会导致 web 启动失败（如 client-modules boot manifest 报错）；\
+             托盘「重启引擎」或管理页重启即可恢复"
+        ),
+        blast: Blast::Green,
+        remedy: None,
+    });
+}
+
 /// 1) 运行器缺失：找不到系统 dsh → 无法启动（不可自愈，仅上报，提示安装）
 fn probe_runner(out: &mut Vec<Finding>) {
     if runtime::dsh_runner().is_none() {
@@ -266,7 +316,7 @@ fn probe_port(cfg: &AppConfig, out: &mut Vec<Finding>) {
                     cfg.port, pid
                 ),
                 evidence: format!(
-                    "HTTP 200 且端口探测显示 127.0.0.1:{} 被 PID {pid} 监听",
+                    "HTTP 探测存活（2xx 或鉴权挑战 401）且端口探测显示 127.0.0.1:{} 被 PID {pid} 监听",
                     cfg.port
                 ),
                 blast: Blast::Green,

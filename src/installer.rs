@@ -491,47 +491,82 @@ fn install_dsh(spec: Option<&str>) -> (bool, String) {
     let Some(npm) = npm_for_dsh().or_else(|| which("npm")) else {
         return (false, "未找到 npm 命令".to_string());
     };
+    // 更新期间必须先停引擎：npm install -g 替换磁盘文件，而运行中的 Node 进程把旧版
+    // 代码留在内存里、又按需从磁盘懒加载新模块——热更新会形成「内存旧代码 + 磁盘新
+    // 文件」混装（2026-09-06 实测：更新后 web 启动报 client-modules boot manifest
+    // batches must be an array，即旧 manifest 组装逻辑撞上新版解析器）。
+    // 与卸载流程（uninstall.rs）同款先停后做；装完无论成败都拉回（见函数尾）。
+    let engine_was_running = crate::supervisor::status().running;
+    if engine_was_running {
+        crate::supervisor::log("更新 dsh：先停引擎防新旧代码混装，装完自动拉回");
+        if let Err(e) = crate::supervisor::stop() {
+            crate::supervisor::log(&format!("更新 dsh：停止引擎失败（继续更新）: {e}"));
+        }
+    }
     let mut cmd = std::process::Command::new(&npm);
     cmd.args(["install", "-g", &pkg]);
     crate::supervisor::hide_window(&mut cmd);
     // npm 静默期输出少，给足超时（首次下载依赖树可能较慢）
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return (false, format!("无法启动 npm: {e}")),
+        Err(e) => {
+            restart_engine_if_stopped(engine_was_running);
+            return (false, format!("无法启动 npm: {e}"));
+        }
     };
     let out = child.wait_with_output();
-    match out {
+    let result = match out {
         Ok(out) => {
             let tail = tail_text(&out.stdout, &out.stderr);
             if !out.status.success() {
-                return (
+                (
                     false,
                     format!(
                         "dsh 安装失败（退出码 {:?}，{pkg}）。{tail} 若重试仍失败，请先在终端执行 `npm uninstall -g @deepseek-ai/dsh` 再安装。",
                         out.status.code()
                     ),
-                );
-            }
-            // 版本验证：装完 dsh --version 应与目标一致（防 PATH 解析到旧 dsh 造成假成功）
-            let ver = version_of("dsh");
-            match spec {
-                Some(want) if want != "latest" && ver.as_deref() == Some(want) => (
-                    true,
-                    format!("dsh 更新成功（{pkg}，现为 {}）。{tail}", ver.unwrap_or_default()),
-                ),
-                Some(want) => (
-                    false,
-                    format!(
-                        "npm 安装结束但 dsh 版本未变为目标（当前 {:?}，期望 {want}；npm={}，dsh 解析自 {}）。{tail} 可能是 PATH 中另一套 node 生态的 dsh 排在前，请检查 PATH 或在终端执行 `npm uninstall -g @deepseek-ai/dsh` 后重试。",
-                        ver,
-                        npm.display(),
-                        which("dsh").map(|p| p.display().to_string()).unwrap_or_default()
+                )
+            } else {
+                // 版本验证：装完 dsh --version 应与目标一致（防 PATH 解析到旧 dsh 造成假成功）
+                let ver = version_of("dsh");
+                match spec {
+                    Some(want) if want != "latest" && ver.as_deref() == Some(want) => (
+                        true,
+                        format!("dsh 更新成功（{pkg}，现为 {}）。{tail}", ver.unwrap_or_default()),
                     ),
-                ),
-                None => (true, format!("dsh 安装成功（{pkg}）。{tail}")),
+                    Some(want) => (
+                        false,
+                        format!(
+                            "npm 安装结束但 dsh 版本未变为目标（当前 {:?}，期望 {want}；npm={}，dsh 解析自 {}）。{tail} 可能是 PATH 中另一套 node 生态的 dsh 排在前，请检查 PATH 或在终端执行 `npm uninstall -g @deepseek-ai/dsh` 后重试。",
+                            ver,
+                            npm.display(),
+                            which("dsh").map(|p| p.display().to_string()).unwrap_or_default()
+                        ),
+                    ),
+                    None => (true, format!("dsh 安装成功（{pkg}）。{tail}")),
+                }
             }
         }
         Err(e) => (false, format!("等待 npm 结束失败: {e}")),
+    };
+    // 装完拉回引擎（无论成败）：失败时磁盘是旧版/半更新态，重启后由 doctor/用户介入；
+    // 不能让壳停在「引擎被更新停掉且不再拉起」的状态。stop() 已清 auto_restart，
+    // start() 恢复为 true，监测线程不会在安装窗口期抢跑。
+    if engine_was_running {
+        restart_engine_if_stopped(true);
+    }
+    result
+}
+
+/// 更新流程收尾：拉回更新前在跑的引擎（installer 线程无法直接用 cfg 之外的上下文，
+/// 统一从 config::load() 取端口等配置）。
+fn restart_engine_if_stopped(was_running: bool) {
+    if !was_running {
+        return;
+    }
+    let cfg = crate::config::load();
+    if let Err(e) = crate::supervisor::start(&cfg) {
+        crate::supervisor::log(&format!("更新 dsh：拉回引擎失败: {e}"));
     }
 }
 

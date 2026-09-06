@@ -55,8 +55,6 @@ struct MenuItems {
 }
 
 struct App {
-    /// dsh web 地址（引擎本体 UI）：http://127.0.0.1:<port>
-    url: String,
     items: MenuItems,
     pending_menu: Option<Menu>,
     tray: Option<tray_icon::TrayIcon>,
@@ -92,7 +90,9 @@ impl ApplicationHandler<UserEvent> for App {
                     supervisor::shutdown();
                     std::process::exit(0);
                 } else if ev.id == ids.open {
-                    open_browser(&self.url);
+                    // 点击时解析：dsh 0.1.2-rc.1 起 web 默认本地鉴权，需带 engine.log
+                    // 里末次打印的 token URL（引擎重启会换 token，不能缓存）
+                    open_browser(&supervisor::ui_url());
                 } else if ev.id == ids.open_admin {
                     // 动态查实际管理页端口（固定端口被占时回退随机端口）
                     if let Some(p) = crate::status::admin_port() {
@@ -290,7 +290,7 @@ impl App {
 /// 运行托盘事件循环。返回：
 /// - `Ok(())`：托盘正常退出（用户点「退出」）
 /// - `Err(_)`：托盘不可用（典型：无桌面会话 / 创建事件循环失败）→ 调用方降级无头模式
-pub fn run_tray(url: &str) -> Result<(), String> {
+pub fn run_tray() -> Result<(), String> {
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(el) => el,
         Err(e) => {
@@ -309,7 +309,6 @@ pub fn run_tray(url: &str) -> Result<(), String> {
 
     let (menu, items) = build_ui();
     let mut app = App {
-        url: url.to_string(),
         items,
         pending_menu: Some(menu),
         tray: None,

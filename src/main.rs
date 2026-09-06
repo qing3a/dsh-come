@@ -437,7 +437,7 @@ fn main() {
         );
         headless_loop();
     } else {
-        match tray::run_tray(&url) {
+        match tray::run_tray() {
             Ok(()) => {}
             Err(e) => {
                 // 托盘不可用（无桌面会话/创建事件循环失败）：降级无头模式，守护继续跑

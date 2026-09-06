@@ -295,7 +295,11 @@ fn append_log(line: &str) {
 
 // ---------- 健康探测（契约 C2） ----------
 
-/// HTTP GET 返回 200 即视为就绪（v1 只看状态码；后续加页面版本指纹，见 DESIGN §7.4）。
+/// HTTP GET 返回 2xx 即视为就绪；401/403 **也视为存活**——dsh 0.1.2-rc.1 起
+/// `dsh web` 默认启用本地鉴权，未带 token 的探测请求会收到 401。鉴权挑战本身就是
+/// 「HTTP 服务在正常应答」的证明，不能据此判死：否则就绪探测永远超时（2026-09-06
+/// 实测「仍在进行：启动中…」刷满 240s 后报启动超时）、doctor 还会把健康引擎当
+/// 僵尸进程误杀。5xx / 404 仍视为未就绪。
 fn http_ok_path(port: u16, timeout_ms: u64, path: &str) -> bool {
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
@@ -305,7 +309,10 @@ fn http_ok_path(port: u16, timeout_ms: u64, path: &str) -> bool {
         Err(_) => return false,
     };
     match client.get(format!("http://127.0.0.1:{port}{path}")).send() {
-        Ok(resp) => resp.status().is_success(),
+        Ok(resp) => {
+            let s = resp.status();
+            s.is_success() || s.as_u16() == 401 || s.as_u16() == 403
+        }
         Err(_) => false,
     }
 }
@@ -313,6 +320,35 @@ fn http_ok_path(port: u16, timeout_ms: u64, path: &str) -> bool {
 /// 兼容旧调用：探首页 `/`。
 pub fn http_ok(port: u16, timeout_ms: u64) -> bool {
     http_ok_path(port, timeout_ms, "/")
+}
+
+/// dsh 界面入口 URL：优先从 engine.log 提取**末次出现的带 token URL**。
+/// dsh 0.1.2-rc.1 起 `dsh web` 默认本地鉴权，启动时把 `http://127.0.0.1:<port>/?token=…`
+/// 打印到 stdout（被重定向进 engine.log），裸访问一律 401——托盘/向导打开浏览器必须
+/// 用带 token 的地址。找不到（旧版 dsh 无鉴权 / 日志已轮转）→ 回退裸 URL。
+pub fn ui_url() -> String {
+    let cfg = crate::config::load();
+    let bare = format!("http://127.0.0.1:{}", cfg.port);
+    let log = runtime::engine_log();
+    let Ok(text) = std::fs::read_to_string(&log) else {
+        return bare;
+    };
+    for line in text.lines().rev() {
+        if !line.contains("token=") {
+            continue;
+        }
+        // 行内可能是裸 URL，也可能是壳日志前缀 + dsh 输出混写：从 http:// 起截到空白
+        let Some(start) = line.find("http://") else {
+            continue;
+        };
+        let url = line[start..].split_whitespace().next().unwrap_or("");
+        if url.contains(&format!("127.0.0.1:{}", cfg.port))
+            || url.contains(&format!("localhost:{}", cfg.port))
+        {
+            return url.to_string();
+        }
+    }
+    bare
 }
 
 /// 健康探测：优先专用健康口 `/api/health`（需 dsh 侧插件暴露，见 resources/dsh-health-plugin.js），

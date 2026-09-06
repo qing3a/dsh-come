@@ -151,8 +151,9 @@ pub fn start(cfg: &AppConfig) {
                         std::thread::sleep(Duration::from_millis(500));
                     }
                     if became_ready {
-                        // 打开 dsh 引擎本体界面（默认端口 3080）
-                        let dsh_url = format!("http://127.0.0.1:{}", exec_cfg.port);
+                        // 打开 dsh 引擎本体界面：用 engine.log 里的带 token URL
+                        // （dsh 0.1.2-rc.1 起 web 默认本地鉴权，裸 URL 会 401）
+                        let dsh_url = supervisor::ui_url();
                         crate::tray::open_browser(&dsh_url);
                         // 同时打开 dsh-come 管理页：动态读实际端口（固定端口被占时可能回退随机端口）
                         if let Some(p) = crate::status::admin_port() {
