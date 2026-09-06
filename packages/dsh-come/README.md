@@ -62,11 +62,11 @@ for d in packages/dsh-come packages/dsh-come-win32-x64 packages/dsh-come-darwin 
   (cd "$d" && npm version "$VER" --no-git-tag-version --allow-same-version)
 done
 
-# 3) 发布（平台包先、主包最后）
-(cd packages/dsh-come-win32-x64 && npm publish --access public)
-(cd packages/dsh-come-darwin && npm publish --access public)
-(cd packages/dsh-come-linux-x64 && npm publish --access public)
-(cd packages/dsh-come && npm publish --access public)
+# 3) 发布（平台包先、主包最后；本机 registry 若为镜像需显式指定官方源）
+(cd packages/dsh-come-win32-x64 && npm publish --access public --registry https://registry.npmjs.org/)
+(cd packages/dsh-come-darwin && npm publish --access public --registry https://registry.npmjs.org/)
+(cd packages/dsh-come-linux-x64 && npm publish --access public --registry https://registry.npmjs.org/)
+(cd packages/dsh-come && npm publish --access public --registry https://registry.npmjs.org/)
 ```
 
 ## 开发与测试
