@@ -16,7 +16,7 @@ jobs:
       # tray-icon（Linux 托盘）依赖 GTK/GLib 系统库
       - name: 安装 Linux 系统依赖
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libglib2.0-dev
+        run: sudo apt-get update && sudo apt-get update && sudo apt-get install -y libgtk-3-dev libglib2.0-dev libxdo-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
