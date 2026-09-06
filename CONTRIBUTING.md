@@ -1,6 +1,6 @@
 # Contributing to dsh-come
 
-欢迎贡献！dsh-come 是开源的 DSH 桌面发行版（Rust 桌面壳 + 自带 [Harness-LocalApp](https://github.com/qing3a/harness-localapp) 的 HLP 协议层与 LocalApp 生态）。
+欢迎贡献！dsh-come 是开源的 DSH 桌面应用（Rust 桌面壳 + 自带 [Harness-LocalApp](https://github.com/qing3a/harness-localapp) 的 HLP 协议层与 LocalApp 生态）。
 
 ## 开发环境
 
@@ -38,12 +38,12 @@ cargo clippy --release
 cargo test --release
 ```
 
-CI（`.github/workflows/ci.yml`）push/PR 自动跑 fmt/clippy/test/build；`hlp-plugin-check` job 校验发行版插件源与 HLP 仓库一致（需 Secret `DEPLOY_SSH_KEY`，未配置自动跳过）。
+CI（`.github/workflows/ci.yml`）push/PR 自动跑 fmt/clippy/test/build；`hlp-plugin-check` job 校验随附插件源与 HLP 仓库一致（需 Secret `DEPLOY_SSH_KEY`，未配置自动跳过）。
 
 ## 发布流程
 
 ```bash
-# 1. 同步最新 HLP 插件到发行版源（铁律：发版前必须跑）
+# 1. 同步最新 HLP 插件到随附插件源（铁律：发版前必须跑）
 node scripts/sync-hlp-plugin.mjs
 # 2. cargo build --release
 # 3. 打 tag → GitHub Actions 自动发 Release（上传 exe + 资产）
@@ -53,7 +53,7 @@ Release 资产含 `dsh-come.exe` + `hlp-plugin.zip`（用户解压到 exe 同目
 
 ## 敏感信息纪律
 
-真实邮箱 / SMTP 授权码 / Token / 私钥绝不进仓库（含 git 历史）；文档用示例地址。发行版插件源由 sync 脚本排除 `data/`（真实业务数据不进发行版）。
+真实邮箱 / SMTP 授权码 / Token / 私钥绝不进仓库（含 git 历史）；文档用示例地址。随附插件源由 sync 脚本排除 `data/`（真实业务数据不进安装包）。
 
 ## 许可证
 

@@ -1,15 +1,15 @@
-# dsh-come｜开源 DSH 桌面发行版
+# dsh-come｜DSH 桌面壳与 LocalApp 生态
 
 > 🌐 [English README](README.en.md)
 
-**dsh-come —— 开源的 DSH 桌面发行版：一键安装 DSH + LocalApp 生态，让普通人也能用 AI Agent 协作。**
+**dsh-come —— 开源的 DSH 桌面应用：托盘常驻的进程守护 + 一键打开 DSH，并随附 LocalApp 生态（v0.3+）。**
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的桌面应用**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。v0.3 起内置 **HLP 协议层与 LocalApp 生态**（[Harness-LocalApp](https://github.com/qing3a/harness-localapp)），安装即得 7 个开箱可用的业务应用。
 
-## 发行版包含
+## 内置能力
 
 ```
-dsh-come（桌面发行版）
+dsh-come（桌面应用）
 ├── 桌面壳      托盘常驻 / 进程守护（崩溃自愈）/ 安装引导 / 自愈诊疗 / 管理页 / 自更新
 ├── DSH 引擎    系统安装的 dsh（缺失时自动安装；版本跟随系统 npm）
 ├── HLP 协议层   @hlp/dsh-light-cockpit（协议方法 + App 托管 + @协作好友 + 信任治理）
@@ -30,7 +30,7 @@ dsh-come（桌面发行版）
 
 ## 什么是 HLP
 
-**HLP（Harness LocalApp Protocol）** 是本发行版的协议层（`io.deepseek.harness.localapps`）：定义业务应用如何被 Agent 宿主发现、渲染、编排与「深入对话」（用户在对话里 `@协作好友` 即联动业务工具）。应用 = 声明式元数据 + 标准 MCP 业务 Server + iframe 纯表现层（iframe 不持 MCP 客户端，即使被 XSS 攻破也无法直接发起工具调用）。完整规范见 [HLP 协议 v1.0 正式规范](https://github.com/qing3a/harness-localapp/blob/master/docs/HLP-Protocol-v1.0_正式规范.md)。
+**HLP（Harness LocalApp Protocol）** 是本项目的协议层（`io.deepseek.harness.localapps`）：定义业务应用如何被 Agent 宿主发现、渲染、编排与「深入对话」（用户在对话里 `@协作好友` 即联动业务工具）。应用 = 声明式元数据 + 标准 MCP 业务 Server + iframe 纯表现层（iframe 不持 MCP 客户端，即使被 XSS 攻破也无法直接发起工具调用）。完整规范见 [HLP 协议 v1.0 正式规范](https://github.com/qing3a/harness-localapp/blob/master/docs/HLP-Protocol-v1.0_正式规范.md)。
 
 > **面向谁**：已经装了 `dsh`（或 Node.js）的人，想要一个常驻托盘、双击即启动、挂了自动拉起的桌面入口。缺失时管理页/向导会自动安装（node 用 winget、dsh 用 `npm install -g`，不走 npx 临时拉取）。开发者直接用官方 `npx @deepseek-ai/dsh web` 亦可，本项目的价值是把引擎守护和桌面体验包起来。
 
@@ -120,14 +120,14 @@ macOS 看门狗为 launchd LaunchAgent（登录自启 + KeepAlive）。
 
 ## 发布指南（含 HLP 插件打包）
 
-发版前**必须**同步 HLP 插件源（发行版附带的 LocalApp 生态来自这一步）：
+发版前**必须**同步 HLP 插件源（随附的 LocalApp 生态来自这一步）：
 
 ```bash
 # 从 HLP 开发仓库（默认 ../Harness-LocalApp，可用 --hlp-path 指定）同步最新插件
 node scripts/sync-hlp-plugin.mjs
 ```
 
-脚本会：校验源完整性 → 复制到 `target/release/hlp-plugin/`（排除 .git/data/测试文件——真实数据不进发行版）→ 验证 version 与 `business/*/node_modules` → 生成 `hlp-plugin-version.json`（版本标记，release notes 引用）。CI 的 `hlp-plugin-check` job 每次推送自动做同样校验（需仓库 Secret `DEPLOY_SSH_KEY`：可读私有仓 qing3a/harness-localapp 的 SSH 私钥）。
+脚本会：校验源完整性 → 复制到 `target/release/hlp-plugin/`（排除 .git/data/测试文件——真实数据不进安装包）→ 验证 version 与 `business/*/node_modules` → 生成 `hlp-plugin-version.json`（版本标记，release notes 引用）。CI 的 `hlp-plugin-check` job 每次推送自动做同样校验（需仓库 Secret `DEPLOY_SSH_KEY`：可读私有仓 qing3a/harness-localapp 的 SSH 私钥）。
 
 ## 关键设计
 
