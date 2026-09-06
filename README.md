@@ -1,15 +1,15 @@
-# dsh-come｜DSH 桌面壳与 LocalApp 生态
+# 道临天下（dsh-come）｜DSH 桌面壳与 LocalApp 生态
 
 > 🌐 [English README](README.en.md)
 
-**dsh-come —— 开源的 DSH 桌面应用：托盘常驻的进程守护 + 一键打开 DSH，并随附 LocalApp 生态（v0.3+）。**
+**道临天下（dsh-come）—— 开源的 DSH 桌面应用：托盘常驻的进程守护 + 一键打开 DSH，并随附 LocalApp 生态（v0.3+）。**
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 变成**托盘常驻的桌面应用**：系统托盘图标 + 进程守护（崩溃自愈/退避重启）+ 一键打开/重启，不用每次手敲 `dsh web`。v0.3 起内置 **HLP 协议层与 LocalApp 生态**（[Harness-LocalApp](https://github.com/qing3a/harness-localapp)），安装即得 7 个开箱可用的业务应用。
 
 ## 内置能力
 
 ```
-dsh-come（桌面应用）
+道临天下（dsh-come 桌面应用）
 ├── 桌面壳      托盘常驻 / 进程守护（崩溃自愈）/ 安装引导 / 自愈诊疗 / 管理页 / 自更新
 ├── DSH 引擎    系统安装的 dsh（缺失时自动安装；版本跟随系统 npm）
 ├── HLP 协议层   @hlp/dsh-light-cockpit（协议方法 + App 托管 + @协作好友 + 信任治理）

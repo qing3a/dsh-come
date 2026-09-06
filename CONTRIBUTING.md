@@ -1,6 +1,6 @@
 # Contributing to dsh-come
 
-欢迎贡献！dsh-come 是开源的 DSH 桌面应用（Rust 桌面壳 + 自带 [Harness-LocalApp](https://github.com/qing3a/harness-localapp) 的 HLP 协议层与 LocalApp 生态）。
+欢迎贡献！道临天下（dsh-come）是开源的 DSH 桌面应用（Rust 桌面壳 + 自带 [Harness-LocalApp](https://github.com/qing3a/harness-localapp) 的 HLP 协议层与 LocalApp 生态）。
 
 ## 开发环境
 
