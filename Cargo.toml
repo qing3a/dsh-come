@@ -1,6 +1,6 @@
 [package]
 name = "dsh-come"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "DSH 伴侣：把系统 dsh 变成双击即用的 Windows 桌面 App（直启系统 dsh + 崩溃自愈 + 托盘）"
 license = "MIT"
