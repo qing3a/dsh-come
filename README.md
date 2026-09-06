@@ -118,6 +118,17 @@ curl -fsSL https://github.com/qing3a/dsh-come/releases/latest/download/install.s
 Linux 看门狗依赖 systemd 用户会话（无则自动降级为托盘/`--no-tray` 常驻，崩溃不自动复活）；
 macOS 看门狗为 launchd LaunchAgent（登录自启 + KeepAlive）。
 
+## 发布指南（含 HLP 插件打包）
+
+发版前**必须**同步 HLP 插件源（发行版附带的 LocalApp 生态来自这一步）：
+
+```bash
+# 从 HLP 开发仓库（默认 ../Harness-LocalApp，可用 --hlp-path 指定）同步最新插件
+node scripts/sync-hlp-plugin.mjs
+```
+
+脚本会：校验源完整性 → 复制到 `target/release/hlp-plugin/`（排除 .git/data/测试文件——真实数据不进发行版）→ 验证 version 与 `business/*/node_modules` → 生成 `hlp-plugin-version.json`（版本标记，release notes 引用）。CI 的 `hlp-plugin-check` job 每次推送自动做同样校验（需仓库 Secret `DEPLOY_SSH_KEY`：可读私有仓 qing3a/harness-localapp 的 SSH 私钥）。
+
 ## 关键设计
 
 | 决策 | 理由 |
