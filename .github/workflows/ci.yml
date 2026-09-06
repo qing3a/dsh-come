@@ -9,24 +9,34 @@ on:
 jobs:
   hlp-plugin-check:
     # 需要 Secret DEPLOY_SSH_KEY（可读私有仓 harness-localapp 的 SSH 私钥）；
-    # 未配置时跳过（本地发版前手动跑 node scripts/sync-hlp-plugin.mjs 同样校验）
-    if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+    # 未配置时整 job 短路跳过（发版前本地手动跑 node scripts/sync-hlp-plugin.mjs 同样校验）。
+    # 注意：secrets 上下文在 job 级 if 不可用，经 job env 中转到 step 级判断。
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      HAS_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY != '' }}
     steps:
+      - name: 未配置 SSH key → 跳过
+        if: env.HAS_SSH_KEY != 'true'
+        run: echo "DEPLOY_SSH_KEY 未配置，跳过 HLP 插件校验（发版前请本地运行 node scripts/sync-hlp-plugin.mjs）"
       - uses: actions/checkout@v4
+        if: env.HAS_SSH_KEY == 'true'
       - uses: actions/setup-node@v4
+        if: env.HAS_SSH_KEY == 'true'
         with:
           node-version: 20
-      # 拉取 HLP 开发仓库（同账号私有仓）以同步最新插件
       - uses: webfactory/ssh-agent@v0.9.0
+        if: env.HAS_SSH_KEY == 'true'
         with:
-          ssh-private-key: \${{ secrets.DEPLOY_SSH_KEY }}
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
       - name: 信任 github.com 主机密钥
+        if: env.HAS_SSH_KEY == 'true'
         run: mkdir -p ~/.ssh && ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
       - name: 拉取 HLP 开发仓库
+        if: env.HAS_SSH_KEY == 'true'
         run: git clone --depth 1 git@github.com:qing3a/harness-localapp.git ../Harness-LocalApp
       - name: 同步并校验 HLP 插件
+        if: env.HAS_SSH_KEY == 'true'
         run: node scripts/sync-hlp-plugin.mjs --hlp-path ../Harness-LocalApp
 
   check:
@@ -38,7 +48,7 @@ jobs:
       # tray-icon（Linux 托盘）依赖 GTK/GLib 系统库
       - name: 安装 Linux 系统依赖
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get update && sudo apt-get install -y libgtk-3-dev libglib2.0-dev libxdo-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libglib2.0-dev libxdo-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
