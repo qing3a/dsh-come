@@ -38,11 +38,11 @@ test('compareVersions: 语义化版本比较', () => {
 });
 
 test('平台包映射覆盖全部有资产的平台', () => {
-  // 每个有发行资产的平台组合都有对应平台包
-  assert.equal(PLATFORM_PKGS['win32-x64'].pkg, 'dsh-come-win32-x64');
-  assert.equal(PLATFORM_PKGS['darwin-x64'].pkg, 'dsh-come-darwin');
-  assert.equal(PLATFORM_PKGS['darwin-arm64'].pkg, 'dsh-come-darwin');
-  assert.equal(PLATFORM_PKGS['linux-x64'].pkg, 'dsh-come-linux-x64');
+  // 每个有发行资产的平台组合都有对应平台包（scoped，规避 npm 新包名风控）
+  assert.equal(PLATFORM_PKGS['win32-x64'].pkg, '@qing3a/dsh-come-win32-x64');
+  assert.equal(PLATFORM_PKGS['darwin-x64'].pkg, '@qing3a/dsh-come-darwin');
+  assert.equal(PLATFORM_PKGS['darwin-arm64'].pkg, '@qing3a/dsh-come-darwin');
+  assert.equal(PLATFORM_PKGS['linux-x64'].pkg, '@qing3a/dsh-come-linux-x64');
   // 无平台包的组合（win arm64 / linux arm64）不应有映射，走 GitHub fallback
   assert.equal(PLATFORM_PKGS['win32-arm64'], undefined);
   assert.equal(PLATFORM_PKGS['linux-arm64'], undefined);

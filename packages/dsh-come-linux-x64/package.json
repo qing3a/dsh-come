@@ -1,5 +1,5 @@
 {
-  "name": "dsh-come-linux-x64",
+  "name": "@qing3a/dsh-come-linux-x64",
   "version": "0.2.0",
   "description": "dsh-come Linux x64 桌面壳二进制（平台分发包，由主包 dsh-come 自动安装，勿直接安装）。",
   "license": "MIT",

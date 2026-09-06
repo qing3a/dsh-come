@@ -27,9 +27,9 @@ dsh-come                       # 启动桌面壳（托盘常驻，等价于直�
 ## 二进制来源（两级）
 
 1. **npm registry 平台包**（默认）：`optionalDependencies` 按平台自动安装
-   - `dsh-come-win32-x64`（Windows x64）
-   - `dsh-come-darwin`（macOS universal，x64+arm64）
-   - `dsh-come-linux-x64`（Linux x64）
+   - `@qing3a/dsh-come-win32-x64`（Windows x64）
+   - `@qing3a/dsh-come-darwin`（macOS universal，x64+arm64）
+   - `@qing3a/dsh-come-linux-x64`（Linux x64）
    - postinstall 从已安装的平台包复制二进制到安装目录，**无网络请求**。
 2. **GitHub Releases**（fallback）：平台包未随 npm 装上时自动回退（`releases/latest/download/update-{win|macos|linux}.json` + sha256 校验）。
 
@@ -66,8 +66,7 @@ done
 (cd packages/dsh-come-win32-x64 && npm publish --access public --registry https://registry.npmjs.org/)
 (cd packages/dsh-come-darwin && npm publish --access public --registry https://registry.npmjs.org/)
 (cd packages/dsh-come-linux-x64 && npm publish --access public --registry https://registry.npmjs.org/)
-(cd packages/dsh-come && npm publish --access public --registry https://registry.npmjs.org/)
-```
+(cd packages/dsh-come && npm publish --access public --registry https://registry.npmjs.org/)```
 
 ## 开发与测试
 

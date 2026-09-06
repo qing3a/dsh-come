@@ -31,9 +31,9 @@
   },
   "dependencies": {},
   "optionalDependencies": {
-    "dsh-come-win32-x64": "0.2.0",
-    "dsh-come-darwin": "0.2.0",
-    "dsh-come-linux-x64": "0.2.0"
+    "@qing3a/dsh-come-win32-x64": "0.2.1",
+    "@qing3a/dsh-come-darwin": "0.2.1",
+    "@qing3a/dsh-come-linux-x64": "0.2.1"
   },
   "repository": {
     "type": "git",

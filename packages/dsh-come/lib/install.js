@@ -10,10 +10,10 @@ const { compareVersions, downloadVerifiedStream, fetchManifest } = require('./do
 
 /** 平台包名 → 包内二进制相对路径（与 packages/dsh-come-* 的 files/bin 对齐） */
 const PLATFORM_PKGS = {
-  'win32-x64': { pkg: 'dsh-come-win32-x64', file: 'bin/dsh-come.exe' },
-  'darwin-x64': { pkg: 'dsh-come-darwin', file: 'bin/dsh-come-macos' },
-  'darwin-arm64': { pkg: 'dsh-come-darwin', file: 'bin/dsh-come-macos' },
-  'linux-x64': { pkg: 'dsh-come-linux-x64', file: 'bin/dsh-come-linux' },
+  'win32-x64': { pkg: '@qing3a/dsh-come-win32-x64', file: 'bin/dsh-come.exe' },
+  'darwin-x64': { pkg: '@qing3a/dsh-come-darwin', file: 'bin/dsh-come-macos' },
+  'darwin-arm64': { pkg: '@qing3a/dsh-come-darwin', file: 'bin/dsh-come-macos' },
+  'linux-x64': { pkg: '@qing3a/dsh-come-linux-x64', file: 'bin/dsh-come-linux' },
 };
 
 function platformKey() {
